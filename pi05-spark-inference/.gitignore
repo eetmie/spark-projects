@@ -1,0 +1,23 @@
+# Weights & artifacts (large)
+checkpoints/
+*.safetensors
+*.onnx
+*.engine
+*.plan
+
+# Benchmark output kept, but ignore scratch
+results/*.tmp.json
+
+# Upstream clone (tracked separately; large)
+third_party/openpi/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.uv/
+*.egg-info/
+
+# Misc
+.DS_Store
+*.log

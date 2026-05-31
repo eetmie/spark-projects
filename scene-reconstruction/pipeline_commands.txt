@@ -1,0 +1,90 @@
+# Scene Reconstruction Pipeline — DGX Spark
+# Video → images → COLMAP GUI → 3DGRUT training → PLY → USDZ
+#
+# Image  : 3dgrut:spark-cuda130  (CUDA 13.0, COLMAP 4.0.4 GPU SIFT, SM 12.1 / GB10)
+# Scripts: all tools are Python — no hardcoded paths, run from anywhere.
+
+# ─── 1. CREATE WORKSPACE ─────────────────────────────────────────────────────
+# Pick any directory. Drop your source video inside it.
+
+mkdir -p /path/to/my_scene
+cp source_video/home.MOV /path/to/my_scene/
+
+# ─── 2. EXTRACT FRAMES ───────────────────────────────────────────────────────
+# Extracts ~300 JPEG images and creates the full workspace folder structure.
+# (images/, models/, output/ are created automatically)
+
+python tools/extract_video_frames.py /path/to/my_scene/home.MOV
+# or with options:
+python tools/extract_video_frames.py /path/to/my_scene/home.MOV --frames 150 --max-width 1280
+
+# ─── 3. OPEN COLMAP GUI ──────────────────────────────────────────────────────
+# Launches COLMAP inside the Docker container with X11 forwarding.
+
+python tools/colmap.py /path/to/my_scene
+
+# Alternative: skip the GUI and run everything automatically (steps 3 + 4 in one):
+# python tools/colmap.py /path/to/my_scene --headless
+# python tools/colmap.py /path/to/my_scene --headless --camera-model OPENCV_FISHEYE  # fisheye lens
+# python tools/colmap.py /path/to/my_scene --headless --camera-model SIMPLE_RADIAL   # fixed lens
+# python tools/colmap.py /path/to/my_scene --headless --matcher exhaustive            # unordered photos
+
+# Inside the COLMAP GUI:
+#
+#   File → New project
+#     Database : /data/database.db
+#     Images   : /data/images
+#   → Save
+#
+#   Processing → Feature extraction
+#     Camera model : OPENCV   ← important for phone lens distortion
+#     ☑ Single camera for all images
+#   → Extract
+#
+#   Processing → Sequential matching   ← correct for video (temporally ordered)
+#   → Match
+#
+#   Reconstruction → Start reconstruction   (runs the mapper)
+#
+#   File → Save project
+#   File → Quit
+
+# ─── 4. OPTIONAL UNDISTORTION ────────────────────────────────────────────────
+# Both 3DGRT and 3DGUT support distorted cameras (OPENCV_FISHEYE) natively.
+# No linking or undistortion is required — 3dgrut reads images/ and the camera
+# model from sparse/0/cameras.bin directly.
+#
+# Optional: run image_undistorter if you want pinhole/undistorted images
+# (loses FOV at edges for fisheye, but simplifies the camera model):
+# python tools/colmap.py /path/to/my_scene --undistort-only
+
+# ─── 5. TRAIN 3DGRUT ─────────────────────────────────────────────────────────
+# Default: 3D Gaussian Ray Tracing, 60k iterations, standard GS densification.
+
+python tools/train.py /path/to/my_scene
+
+# Options:
+python tools/train.py /path/to/my_scene --iterations 30000          # quick test
+python tools/train.py /path/to/my_scene --method 3dgut              # rasterization — faster, also supports distorted cameras, no secondary rays
+python tools/train.py /path/to/my_scene --mcmc                      # MCMC densification
+python tools/train.py /path/to/my_scene --mcmc --method 3dgut       # MCMC + unstructured
+python tools/train.py /path/to/my_scene --viser                     # live viewer → localhost:8080
+python tools/train.py /path/to/my_scene --experiment living_room    # custom experiment name
+
+# ─── 6. EXPORT PLY ───────────────────────────────────────────────────────────
+# Finds the latest checkpoint and exports scene.ply to output/<timestamp>/.
+
+python tools/export_scene.py /path/to/my_scene
+# also export raw Gaussian arrays for downstream scripts:
+python tools/export_scene.py /path/to/my_scene --npz
+# or with a specific checkpoint:
+python tools/export_scene.py /path/to/my_scene \
+  --checkpoint /path/to/my_scene/models/scene/ckpt_last.pt
+
+# ─── 7. CONVERT TO USDZ (optional, Isaac Sim / Omniverse) ───────────────────
+# Requires pxr (from Isaac Sim or Kit) and msgpack on the host:
+#   pip install msgpack
+
+python tools/usd_convert.py /path/to/my_scene/output/.../scene.ply
+# or explicit output path:
+python tools/usd_convert.py scene.ply scene.usdz --extract-sidecars

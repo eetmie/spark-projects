@@ -1,0 +1,11 @@
+# Keep the build context tiny — only third_party/openpi is needed at build time.
+checkpoints/
+.cache/
+results/
+.git/
+notes/
+bench/
+docker/
+*.log
+**/__pycache__/
+third_party/openpi/.git/

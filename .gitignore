@@ -1,0 +1,43 @@
+# Backstop ignores for all playbooks — keep recipes, never commit data/artifacts.
+
+# Weights, checkpoints, engines, exported models
+checkpoints/
+*.safetensors
+*.onnx
+*.data
+*.engine
+*.plan
+*.pth
+*.ckpt
+*.gguf
+
+# Datasets / media / reconstruction outputs
+datasets/
+exports/
+archive/
+outputs/
+output/
+frames/
+source_video/
+colmap_output/
+*.mp4
+*.ply
+*.usdz
+
+# Caches, envs, build
+.cache/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+node_modules/
+.claude/
+
+# Third-party clones (vendored separately / cloned at setup time)
+third_party/
+3dgrut/
+
+# Misc
+*.log
+.DS_Store

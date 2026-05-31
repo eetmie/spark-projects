@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environment
+.venv/
+.env
+.env.*
+
+# Hugging Face and local caches
+.cache/
+**/.cache/
+
+# Large/generated ML artifacts
+datasets/
+exports/*.onnx
+exports/*.engine
+exports/*.plan
+exports/*.trt
+outputs/
+archive/
+wandb/
+
+# Logs and scratch
+*.log
+*.tmp
+.DS_Store
+
+# Old/prototype artifacts kept locally only
+archive/failed_export_2026-05-31/
+archive/failed_export_2026-05-31/export_onnx.py
+archive/failed_export_2026-05-31/smolvla_base.onnx
+archive/failed_export_2026-05-31/smolvla_base.pt

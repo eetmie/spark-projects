@@ -1,0 +1,52 @@
+# SmolVLA / LeRobot on NVIDIA GB10 (aarch64, CUDA 13)
+# Tested on Python 3.12.3.
+# Install with:
+#   python -m pip install --upgrade pip
+#   python -m pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu130
+#
+# For byte-for-byte reproduction of this venv, use requirements.lock.txt.
+
+# Core model stack
+transformers==5.3.0
+lerobot==0.5.1
+peft==0.19.1
+diffusers==0.35.2
+accelerate==1.13.0
+huggingface-hub==1.17.0
+safetensors==0.7.0
+tokenizers==0.22.2
+
+# PyTorch CUDA 13.0 for GB10
+# Note: LeRobot 0.5.1 metadata may declare older torch constraints; this project
+# intentionally uses the CUDA 13 aarch64 PyTorch stack that works on GB10.
+torch==2.12.0+cu130
+torchvision==0.27.0+cu130
+torchaudio==2.11.0+cu130
+triton==3.7.0
+
+# LeRobot/data/video dependencies
+datasets==4.8.5
+einops==0.8.2
+draccus==0.10.0
+gymnasium==1.3.0
+wandb==0.24.2
+opencv-python-headless==4.13.0.92
+deepdiff==8.6.2
+jsonlines==4.0.0
+termcolor==3.3.0
+imageio==2.37.3
+imageio-ffmpeg==0.6.0
+av==15.1.0
+rerun-sdk==0.26.2
+torchcodec==0.13.0
+pandas==3.0.3
+pyarrow==24.0.0
+
+# ONNX export/parity
+onnx==1.21.0
+onnxruntime==1.26.0
+onnxscript==0.7.0
+onnxconverter-common==1.16.0
+numpy==2.4.4
+ml_dtypes==0.5.4
+protobuf==6.33.6

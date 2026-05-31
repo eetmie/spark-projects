@@ -1,0 +1,29 @@
+{
+  "timestamp": "2026-05-31T19:28:41.671127+00:00",
+  "host": "d88e010b570e",
+  "arch": "aarch64",
+  "config": "pi05_libero",
+  "checkpoint": "/workspace/checkpoints/pi05_libero_pytorch",
+  "device": "cuda",
+  "is_pytorch": true,
+  "num_steps": 5,
+  "warmup": 5,
+  "iters": 30,
+  "action_shape": [
+    10,
+    7
+  ],
+  "load_s": 41.24,
+  "latency_ms": {
+    "mean": 163.95,
+    "median": 160.65,
+    "p90": 191.47,
+    "p99": 193.48,
+    "min": 139.87,
+    "max": 193.48,
+    "stdev": 20.4
+  },
+  "hz": 6.1,
+  "gpu": "NVIDIA GB10",
+  "torch": "2.9.0a0+50eac811a6.nv25.09"
+}

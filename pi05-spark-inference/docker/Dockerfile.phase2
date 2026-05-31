@@ -1,0 +1,29 @@
+# Phase 2: ONNX export + TensorRT for π0.5 on GB10.
+# Extends the working Phase 1 image with the ONNX/quantization toolchain and the
+# lerobot import closure the export's calibration path needs. Mirrors the Jetson
+# Thor recipe (openpi_on_thor). TensorRT 10.13 + ModelOpt 0.33 are already in base.
+FROM pi05-spark:latest
+
+ENV PIP_NO_CACHE_DIR=1
+
+# ONNX export + graph tooling (versions from the Thor [thor] extra).
+RUN pip install \
+        "onnxscript==0.5.3" "onnx-ir==0.1.10" "onnxruntime==1.23.1" \
+        "onnx_graphsurgeon==0.5.8" "onnxslim" "nvtx"
+
+# lerobot at the exact commit openpi expects (has lerobot.common). --no-deps so it
+# can't drag in a torch pin; its import-time deps are installed explicitly below.
+RUN pip install --no-deps \
+        "lerobot @ git+https://github.com/huggingface/lerobot@0cf864870cf29f4738d3ade893e6fd13fbd7cdb5"
+RUN pip install datasets deepdiff jsonlines draccus termcolor zarr av gymnasium
+
+# ONNX-export-critical patches to the installed transformers modeling_gemma.py
+# (RMSNorm extra_repr guard + explicit attention reshape dim for FP4 block quant).
+COPY phase2/openpi_on_thor/patches/apply_gemma_fixes.py /tmp/apply_gemma_fixes.py
+RUN python /tmp/apply_gemma_fixes.py
+
+# openpi_on_thor scripts are mounted at /workspace/phase2; expose on PYTHONPATH.
+ENV PYTHONPATH=/workspace/phase2
+
+WORKDIR /workspace
+CMD ["/bin/bash"]
