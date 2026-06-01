@@ -165,6 +165,9 @@ def main() -> int:
     if not workspace.is_dir():
         print(f"Error: workspace not found: {workspace}", file=sys.stderr)
         return 1
+    if args.downsample <= 0:
+        print("Error: --downsample must be a positive integer", file=sys.stderr)
+        return 1
 
     # MCMC is only available for colmap configs
     if args.mcmc and args.dataset_type != "colmap":
@@ -297,20 +300,65 @@ def main() -> int:
     print()
 
     override_str = " \\\n  ".join(overrides)
+    prepare_downsample = ""
+    if args.dataset_type == "colmap" and args.downsample != 1:
+        prepare_downsample = f"""
+python - <<'PY'
+from pathlib import Path
+from PIL import Image
+
+factor = {args.downsample}
+dataset = Path({dataset_container!r})
+src_dir = dataset / "images"
+dst_dir = dataset / f"images_{{factor}}"
+suffixes = {{".jpg", ".jpeg", ".png", ".tif", ".tiff"}}
+
+if not src_dir.is_dir():
+    raise SystemExit(f"Missing source image directory: {{src_dir}}")
+
+sources = sorted(path for path in src_dir.rglob("*") if path.suffix.lower() in suffixes)
+if not sources:
+    raise SystemExit(f"No images found in {{src_dir}}")
+
+refreshed = 0
+for src in sources:
+    rel = src.relative_to(src_dir)
+    dst = dst_dir / rel
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() and dst.stat().st_mtime >= src.stat().st_mtime:
+        continue
+
+    with Image.open(src) as image:
+        width = max(1, image.width // factor)
+        height = max(1, image.height // factor)
+        resized = image.resize((width, height), Image.Resampling.LANCZOS)
+        if resized.mode == "RGBA" and dst.suffix.lower() in {{".jpg", ".jpeg"}}:
+            resized = resized.convert("RGB")
+        resized.save(dst, quality=95)
+
+    refreshed += 1
+
+print(f"Downsample : {{src_dir}} -> {{dst_dir}} (factor {{factor}}, {{len(sources)}} images, {{refreshed}} refreshed)")
+PY
+"""
     inner = f"""\
 set -euo pipefail
 source /opt/conda/etc/profile.d/conda.sh && conda activate 3dgrut
 export UV_PROJECT_ENVIRONMENT=$CONDA_PREFIX
 bash /workspace/scripts/install_slangc.sh
 cd /workspace
-python train.py --config-name {config}.yaml \\
+{prepare_downsample}python train.py --config-name {config}.yaml \\
   {override_str}
 """
+
+    torch_cache = Path.home() / ".cache" / "torch"
+    torch_cache.mkdir(parents=True, exist_ok=True)
 
     cmd = [
         "docker", "run", "--rm", "--gpus", "all",
         "--net=host", "--ipc=host",
         "-v", f"{workspace}:/data",
+        "-v", f"{torch_cache}:/root/.cache/torch",
         "--runtime=nvidia",
         args.image,
         "bash", "-lc", inner,
