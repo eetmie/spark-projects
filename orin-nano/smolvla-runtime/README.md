@@ -64,14 +64,23 @@ python run_pipeline.py --backend mock --source synthetic --duration-s 5
 # 0b. Real D435i feed, still no model — confirms the camera path:
 python run_pipeline.py --backend mock --source realsense --duration-s 8
 
-# 1. Build the engine from the Spark-exported ONNX (slow, one-time, ~20-60 min):
-python build_engine.py --onnx exports/smolvla.onnx --engine exports/smolvla.engine
+# 1. Build the engine from the Spark-exported ONNX (slow, one-time, ~20-60 min).
+#    Use BF16 — FP16 is broken for SmolVLA (cosine 0.805, vision-tower overflow);
+#    BF16 is near-lossless (0.9974). --static-batch supplies the required profile.
+python build_engine.py --onnx exports/smolvla.onnx --engine exports/smolvla.engine \
+    --precision bf16 --static-batch
 
-# 2. Pure TRT engine on synthetic frames (validate engine before the camera):
+# 2. Parity-check the engine vs the FP32 ONNX BEFORE trusting any action.
+#    Reference runs FP32 on CPU (true FP32); engine and reference run sequentially
+#    so peak RAM stays inside 8 GB. BF16 should pass at ~0.997; FP16 fails at ~0.805.
+python parity.py --onnx exports/smolvla.onnx --engine exports/smolvla.engine \
+    --model-id lerobot/smolvla_base --num-samples 3
+
+# 3. Pure TRT engine on synthetic frames (validate engine before the camera):
 python run_pipeline.py --backend trt --engine-path exports/smolvla.engine \
     --model-id lerobot/smolvla_base --source synthetic --duration-s 20 --show-actions
 
-# 3. Pure TRT engine + real D435i — the actual pipeline:
+# 4. Pure TRT engine + real D435i — the actual pipeline:
 python run_pipeline.py --backend trt --engine-path exports/smolvla.engine \
     --model-id lerobot/smolvla_base --source realsense --duration-s 30 --show-actions
 

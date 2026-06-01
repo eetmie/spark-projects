@@ -2,6 +2,37 @@
 
 Running log. Newest first. (Merges the earlier `smolvla-spark-finetune/jetson/notes`.)
 
+## USE BF16, NOT FP16 — precision sweep on the Spark (2026-06-02)
+
+De-risked the whole build on the DGX Spark (GB10/Blackwell, TRT 10.13) before touching the
+Nano — same TRT 10.x family, so build-time op support and FP16/BF16 numerics transfer; only the
+absolute latencies don't (Blackwell ≫ Orin). Built engines from `smolvla_base_fp32_valid.onnx`
+and compared each against the **FP32 ONNX (ORT CPU = true FP32)** on identical seeded inputs:
+
+| precision | cosine | max_abs | infer (Blackwell, opt0) | verdict |
+|-----------|--------|---------|-------------------------|---------|
+| fp32 (tf32) | 0.999997 | 1.3e-3 | 165 ms | correct, slowest |
+| fp16        | **0.805** | 3.1e-1 | 43 ms | **BROKEN — wrong signs** |
+| fp16+bf16   | 0.805 | 3.1e-1 | 44 ms | BROKEN (TRT picks fp16 for the hot layers) |
+| **bf16**    | **0.9974** | 6.9e-2 | 104 ms | **near-lossless — RECOMMENDED** |
+
+Why FP16 breaks: the SmolVLM **vision tower** has 730 constants that overflow FP16's exponent
+range, incl. literal `inf` attention-mask values in *every* `vision_model/.../self_attn` layer
+(→ clipped to ±65504, softmax/layernorm then diverge). BF16 shares FP32's exponent range, so no
+overflow, while still using tensor cores. **Per-layer FP32 pinning does NOT save FP16**: TRT's
+myelin fusion collapses the softmax/norm nodes into unnamed `__myl_*` supernodes, and
+`trtexec --layerPrecisions` only supports a global `*:` default (not substring globs) — so name
+pins matched nothing (engine came out byte-identical to plain FP16). BF16 sidesteps all of it.
+
+Also confirmed on the Spark: **the pure-TRT build succeeds** — the vision-tower masked-indexing
+ops (`NonZero` ×2, `GatherND`, `ScatterND` ×543) are accepted by TRT 10.x, no hard abort. Build
+took ~4 min at opt-level 0 on Blackwell for a 108k-node graph; budget much longer + OOM-watch on
+the 8 GB Nano. Raw numbers: `smolvla-spark-finetune/exports/precision_sweep_spark.json`.
+
+→ `build_engine.py --precision bf16 --static-batch` is the recipe; `parity.py` threshold is 0.997.
+Open question for the Nano: BF16 ~104 ms on *Blackwell* → Orin will be slower; hitting 10 Hz may
+need fewer denoise steps (re-export), independent of precision.
+
 ## Decision: pure TensorRT engine as the primary path
 
 Chose the serialized `.engine` + TensorRT 10.x API + `cuda-python` over the ORT TensorRT-EP path
@@ -61,13 +92,18 @@ Produced on the Spark (`../../smolvla-spark-finetune/`). Two things matter here:
 
 ## Expected performance (Orin Nano 8 GB)
 
+NOTE: superseded by the Spark precision sweep at the top — **build BF16, not FP16**. The earlier
+FP16 latency guesses below are moot since FP16 is numerically broken for this model. Use them only
+as a rough ORT-vs-pure-TRT shape; the real Orin numbers must be measured on-device.
+
 | Path | Estimated latency |
 |---|---|
 | ORT CUDA EP (TRT not used) | ~108 ms |
-| ORT TRT EP FP16 | ~40–80 ms |
-| **Pure TRT engine FP16 (target)** | **≤ pure-TRT ORT, lower overhead** |
+| ORT TRT EP | ~40–80 ms |
+| Pure TRT engine BF16 | measure on-device (Blackwell did 104 ms; Orin will be slower) |
 
-Target: p95 < 100 ms at 10 denoising steps → 10 Hz loop. Measure before wiring anything.
+Target: p95 < 100 ms at 10 denoising steps → 10 Hz loop. Measure before wiring anything. If BF16
+can't hit it on the Orin, the lever is **fewer denoise steps** (re-export), not precision.
 
 ## Next steps in order
 
@@ -75,11 +111,23 @@ Target: p95 < 100 ms at 10 denoising steps → 10 Hz loop. Measure before wiring
 2. Copy `model.onnx` (+ `.data`) into `smolvla-runtime/exports/`.
 3. `pip`-set up the venv (`--system-site-packages`), confirm `import tensorrt, cuda.cudart`.
 4. `build_engine.py` → `.engine` (be patient / watch for OOM).
-5. Parity-check engine vs ONNX (TODO: add `parity.py`; reuse the Spark `parity_check_onnx.py` shape).
+5. Parity-check engine vs ONNX: `parity.py` (FP16 engine vs **FP32 ONNX on CPU EP** — true
+   FP32; CUDA EP would be TF32-tainted). Runs ref then engine sequentially to stay under 8 GB;
+   identical seeded inputs (same noise per sample); PASS = action cosine ≥ threshold + no NaN/Inf.
 6. `run_pipeline.py --backend trt --source synthetic` → first run, sanity.
 7. `--source realsense` → real benchmark. Record p95.
 8. If pure build fails on an op: `--backend ort` to locate it.
 
 ## Parity (TRT vs ONNX)
 
-_(none yet — run after the first engine build)_
+Harness ready: `parity.py` (FP16 `.engine` vs FP32 ONNX). Reference on CPU EP for *true* FP32
+(ORT's CUDA EP uses TF32 on Ampere → not a clean gold). Identical seeded inputs to both, same
+noise draw per sample. Reports per-output cosine / max_abs / mean_abs / max_rel + NaN/Inf flag;
+PASS when worst action-chunk cosine ≥ `--cos-threshold` (default 0.999) and all outputs finite.
+On FAIL it prints the FP32-pin rebuild command. Run after the first engine build:
+
+```bash
+python parity.py --onnx exports/smolvla.onnx --engine exports/smolvla.engine --num-samples 3
+```
+
+_(no numbers yet — needs the Spark ONNX + a built engine on the box.)_
