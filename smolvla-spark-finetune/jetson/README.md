@@ -1,14 +1,13 @@
-# SmolVLA on Jetson Orin Nano (deploy half)
+# Moved → `../../orin-nano/smolvla-runtime/`
 
-Downstream of the GB10 fine-tune/export ([`../`](../)). Takes the ONNX exported on the
-Spark and runs it on **Jetson Orin Nano** via TensorRT.
+The Jetson Orin Nano deploy half of this playbook now lives at the repo top level, alongside the
+RealSense/RT-kernel setup it depends on:
 
-Scope here: ONNX → TensorRT engine build + TRT-vs-ONNX parity on the Jetson.
-(Robot control stack is kept in a separate repo.)
+- **[`../../orin-nano/smolvla-runtime/`](../../orin-nano/smolvla-runtime/)** — ONNX → TensorRT
+  engine + the camera→model→actions pipeline (pure TensorRT).
+- **[`../../orin-nano/realsense-rt/`](../../orin-nano/realsense-rt/)** — RealSense D435i on the RT
+  kernel (a prerequisite for the real-camera path).
 
-## Workflow
-1. Copy the parity-checked ONNX from GB10 (`../exports/…`) to the Jetson.
-2. Build the TensorRT engine on the Jetson (`trtexec`).
-3. Run TRT-vs-ONNX parity to confirm the engine matches.
-
-See [`notes/findings.md`](notes/findings.md).
+This `smolvla-spark-finetune/` playbook keeps the **Spark side**: fine-tune SmolVLA and export a
+parity-checked ONNX. The boundary is unchanged — export ONNX on the Spark, build the TensorRT engine
+on the Orin Nano.

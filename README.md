@@ -31,6 +31,13 @@ SmolVLA CUDA forward + 1-step LoRA smoke test + ONNX export with PyTorch-vs-ONNX
 Smartphone/wide-angle video → COLMAP → 3DGRUT Gaussian splat → Isaac Sim NuRec USDZ on
 DGX Spark. 3DGRT ray-tracing backend (uses GB10 RT cores). See `scene-reconstruction/README.md`.
 
+### [`orin-nano/`](orin-nano/) — Jetson Orin Nano deploy side (RealSense + SmolVLA TensorRT)
+The deploy counterpart to the Spark playbooks, on a Jetson **Orin Nano** (JetPack 6, PREEMPT_RT
+kernel). Two parts: `realsense-rt/` builds the RealSense D435i kernel modules against the RT kernel
+(reproducible, live-verified), and `smolvla-runtime/` runs the SmolVLA ONNX exported by
+`smolvla-spark-finetune/` through a **pure TensorRT engine** (camera → model → action chunk; no
+robot control yet). Engines are built on-device — never copied from the Spark.
+
 ## Notes
 - `pi05-spark-inference/phase2/openpi_on_thor/` contains scripts adapted from NVIDIA /
   Jetson AI Lab's "OpenPi π0.5 on Jetson Thor" tutorial, kept here for reproducibility.

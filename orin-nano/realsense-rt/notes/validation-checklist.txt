@@ -1,0 +1,35 @@
+REALSENSE + RT KERNEL VALIDATION
+Run these AFTER reboot, camera plugged in.
+
+-- 1. REBOOT SANITY --
+Check modules loaded automatically (no manual modprobe needed):
+
+lsmod | grep -E "uvcvideo|hid_sensor"
+
+Expected: all 6 entries present.
+
+-- 2. DEVICE ENUMERATION --
+rs-enumerate-devices 2>&1 | grep -E "Name|Serial|Firmware|Motion|ERROR"
+
+Expected: D435I name/serial, Motion Module listed, no ERROR lines.
+
+-- 3. RT LATENCY (30 sec, grab a coffee) --
+sudo cyclictest --mlockall --smp --priority=80 --interval=1000 --distance=0 --duration=30s --histogram=200 --quiet
+
+Target for 100Hz control:
+  max latency well under 1000us (1ms)
+  under 500us max = solid
+  over 1000us max = investigate
+
+-- 4. IMU IIO DEVICES --
+ls /sys/bus/iio/devices/
+cat /sys/bus/iio/devices/iio:device*/name 2>/dev/null
+
+Expected: accel_3d and gyro_3d present.
+
+-- 5. STREAMS UNDER LOAD --
+Open realsense-viewer, enable Depth + Color + IMU simultaneously.
+Let run for 60 seconds. Watch for:
+  - dropped frames
+  - stream error popups
+  - IMU data moving when you shake the camera

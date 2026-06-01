@@ -1,0 +1,11 @@
+# Large / local artifacts — recipe only, not data (matches the repo-wide policy).
+exports/
+*.onnx
+*.onnx.data
+*.engine
+*.trt
+.venv/
+__pycache__/
+*.pyc
+/tmp/
+*_trt_cache/
