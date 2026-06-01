@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Export a 3DGRUT checkpoint to a Gaussian Splat PLY file.
 
-Finds the most recent checkpoint under models/ by default. Exports scene.ply
-to a timestamped output/ subdirectory.
+Finds the most recent checkpoint under models/ by default. Exports raw.ply
+to the workspace root for cleanup/compression in SuperSplat.
 
 Usage:
     python tools/export_scene.py /path/to/scene
     python tools/export_scene.py /path/to/scene --iteration 15000
     python tools/export_scene.py /path/to/scene --checkpoint models/scene/data-.../ours_15000
     python tools/export_scene.py /path/to/scene --checkpoint models/scene/data-.../ours_15000/ckpt_15000.pt
-    python tools/export_scene.py /path/to/scene --out /path/to/scene/output/my_export
+    python tools/export_scene.py /path/to/scene --out /path/to/scene/exports
+    python tools/export_scene.py /path/to/scene --name living_room_raw.ply
     python tools/export_scene.py /path/to/scene --npz
     python tools/export_scene.py /path/to/scene --image 3dgrut:spark-cuda130
 """
@@ -18,7 +19,6 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 
 
@@ -70,7 +70,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--out",
-        help="Output directory (default: <workspace>/output/<timestamp>)",
+        help="Output directory (default: workspace root)",
+    )
+    parser.add_argument(
+        "--name", default="raw.ply",
+        help="Output PLY filename (default: raw.ply)",
     )
     parser.add_argument(
         "--image", default="3dgrut:spark-cuda130",
@@ -122,8 +126,11 @@ def main() -> int:
         print(f"Error: checkpoint must be inside workspace ({workspace})", file=sys.stderr)
         return 1
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_host = Path(args.out).expanduser().resolve() if args.out else workspace / "output" / stamp
+    if Path(args.name).name != args.name:
+        print("Error: --name must be a filename, not a path", file=sys.stderr)
+        return 1
+
+    out_host = Path(args.out).expanduser().resolve() if args.out else workspace
     out_host.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -134,9 +141,10 @@ def main() -> int:
 
     ckpt_container = f"/data/{ckpt_rel}"
     out_container = f"/data/{out_rel}"
+    ply_name = args.name
 
     print(f"Checkpoint : {ckpt}")
-    print(f"Output     : {out_host}/scene.ply")
+    print(f"Output     : {out_host / ply_name}")
     if args.npz:
         print(f"NPZ output : {out_host}/scene_gaussians.npz")
     print()
@@ -166,8 +174,9 @@ conf  = checkpoint["config"]
 model = MixtureOfGaussians(conf, scene_extent=checkpoint.get("scene_extent"))
 model.init_from_checkpoint(checkpoint, setup_optimizer=False)
 model.eval()
-PLYExporter().export(model, out_path / "scene.ply", conf=conf)
-print(f"Exported: {{out_path}}/scene.ply")
+ply_name = "{ply_name}"
+PLYExporter().export(model, out_path / ply_name, conf=conf)
+print(f"Exported: {{out_path}}/{{ply_name}}")
 if export_npz:
     accessor = GaussianExportAccessor(model, conf)
     attrs = accessor.get_attributes(preactivation=True)
@@ -197,11 +206,13 @@ PY
 
     result = subprocess.run(cmd)
     if result.returncode == 0:
-        ply = out_host / "scene.ply"
+        ply = out_host / ply_name
         print(f"\nPLY: {ply}")
         if args.npz:
             print(f"NPZ: {out_host / 'scene_gaussians.npz'}")
-        print(f"Next: python tools/usd_convert.py {ply} {out_host / 'scene.usdz'}")
+        cleaned = out_host / "cleaned.ply"
+        print("Next: clean/compress raw.ply in SuperSplat, export cleaned.ply with SH degree 3")
+        print(f"Then: python tools/usd_convert.py {cleaned} {out_host / 'scene.usdz'}")
     return result.returncode
 
 

@@ -1,46 +1,53 @@
 # Scene Reconstruction Pipeline
 
-Smartphone or wide-angle video → 3DGRUT Gaussian splat → Isaac Sim NuRec USDZ on DGX Spark.
-
-## Renderers
-
-3DGRUT ships two renderer backends. **3DGRT is the default** and the right choice on DGX Spark.
-
-| | 3DGRT (default) | 3DGUT |
-|---|---|---|
-| Rendering | Full ray tracing (OptiX) | Rasterization (unscented transform) |
-| Quality | Best — reflections, shadows, secondary rays | Good — primary rays only |
-| Speed | Slower (needs RT hardware) | Faster |
-| Distorted cameras | Native (OPENCV_FISHEYE etc.) | Native (OPENCV_FISHEYE etc.) |
-| DGX Spark (GB10) | Recommended — dedicated RT cores | Fallback if speed matters |
-
-Both renderers handle distorted cameras natively — no image undistortion required.
+Smartphone video -> COLMAP -> 3DGRUT Gaussian splat -> SuperSplat cleanup/compression -> Isaac Sim NuRec USDZ on DGX Spark.
 
 ## Workspace Layout
 
+The normal pipeline only creates the folders and files that are used by the next step:
+
 ```text
 my_scene/
-├── images/          ← extracted images used by COLMAP and 3DGRUT
-├── database.db      ← COLMAP database
-├── sparse/0/        ← COLMAP sparse reconstruction + camera parameters
-├── vocab_tree.bin   ← optional loop-detection vocabulary tree
-├── models/          ← 3DGRUT checkpoints
-└── output/          ← timestamped PLY and USDZ exports
+├── video.MOV        <- source video copied from iPhone
+├── images/          <- ffmpeg-extracted frames for COLMAP and 3DGRUT
+├── database.db      <- COLMAP database
+├── sparse/0/        <- COLMAP sparse reconstruction and camera parameters
+├── models/          <- 3DGRUT checkpoints
+├── raw.ply          <- direct 3DGRUT export
+├── cleaned.ply      <- SuperSplat-trimmed/compressed export, SH degree 3
+└── scene.usdz       <- Isaac Sim / Omniverse NuRec bundle
 ```
 
 ## Quick Start
 
-### 1. Extract Images
+Run commands from this directory:
 
 ```bash
-python tools/extract_video_frames.py /path/to/my_scene/video.MOV
-# Creates images/, models/, output/ automatically.
-# Options: --frames 150  --max-width 1920  (default: native video resolution)
+cd /home/masi-pgx/spark-projects/scene-reconstruction
 ```
 
-### 2. COLMAP reconstruction
+### 1. Extract Frames
 
-Open the GUI:
+Put the iPhone video in a scene folder, then extract frames:
+
+```bash
+mkdir -p /path/to/my_scene
+cp /path/to/video.MOV /path/to/my_scene/
+python tools/extract_video_frames.py /path/to/my_scene/video.MOV
+```
+
+This creates `/path/to/my_scene/images/`. Useful options:
+
+```bash
+python tools/extract_video_frames.py /path/to/my_scene/video.MOV --frames 150 --max-width 1920
+python tools/extract_video_frames.py /path/to/my_scene/video.MOV --frames 200 --select sharp
+python tools/extract_video_frames.py /path/to/my_scene/video.MOV --frames 200 --select sharp --candidate-step 2
+python tools/extract_video_frames.py /path/to/my_scene/video.MOV --clear
+```
+
+`--select sharp` scores candidates with SIFT keypoint count plus Laplacian sharpness, then keeps the best frame from each time bucket so the final set covers the full video instead of only the sharpest few seconds.
+
+### 2. COLMAP GUI
 
 ```bash
 python tools/colmap.py /path/to/my_scene
@@ -48,42 +55,34 @@ python tools/colmap.py /path/to/my_scene
 
 Inside COLMAP:
 
-```
+```text
 File > New project
   Database : /data/database.db
   Images   : /data/images
 
 Processing > Feature extraction
-  Camera model : OPENCV          ← phone / DSLR / standard wide-angle
-                 OPENCV_FISHEYE  ← fisheye / action cam (GoPro etc.)
+  Camera model : OPENCV          <- iPhone 1x / normal phone video
+                 OPENCV_FISHEYE  <- iPhone 0.5x / fisheye / action cam
   Single camera for all images: enabled
 
 Processing > Sequential matching
-  Loop detection: disabled   ← requires a vocab_tree.bin file; leave off for video
+  Loop detection: disabled unless the video revisits the same area
 
 Reconstruction > Start reconstruction
-
-File > Save project > Quit
+File > Save project
+File > Quit
 ```
 
-Or run headless (GUI + reconstruction in one command):
+COLMAP writes the database and `sparse/0/`. Do not run undistortion for the normal pipeline; 3DGRUT reads `images/` and the COLMAP camera model directly.
+
+Headless COLMAP is still available when you do not want the GUI:
 
 ```bash
 python tools/colmap.py /path/to/my_scene --headless
 python tools/colmap.py /path/to/my_scene --headless --camera-model OPENCV_FISHEYE
 ```
 
-### 3. Optional Undistortion
-
-3DGRUT reads `images/` and the COLMAP camera parameters from `sparse/0/` directly.
-No linking step is needed. Optionally, undistort to pinhole if you want a simplified
-camera model, at the cost of losing some field of view:
-
-```bash
-python tools/colmap.py /path/to/my_scene --undistort-only
-```
-
-### 4. Train 3DGRUT
+### 3. Train 3DGRUT
 
 ```bash
 python tools/train.py /path/to/my_scene
@@ -92,45 +91,50 @@ python tools/train.py /path/to/my_scene
 Common options:
 
 ```bash
-python tools/train.py /path/to/my_scene --iterations 30000          # quick test
-python tools/train.py /path/to/my_scene --mcmc                      # MCMC densification
-python tools/train.py /path/to/my_scene --method 3dgut              # rasterization backend
-python tools/train.py /path/to/my_scene --viser                     # live viewer → localhost:8080
-python tools/train.py /path/to/my_scene --experiment living_room    # named experiment
+python tools/train.py /path/to/my_scene --iterations 30000
+python tools/train.py /path/to/my_scene --viser
+python tools/train.py /path/to/my_scene --method 3dgut
 ```
 
-### 5. Export PLY
+Default training uses 3DGRT, which is the preferred renderer on DGX Spark. 3DGUT is a faster rasterization fallback.
+
+### 4. Export Raw PLY
 
 ```bash
 python tools/export_scene.py /path/to/my_scene
-python tools/export_scene.py /path/to/my_scene --npz   # also export raw Gaussian arrays
 ```
 
-### 6. Convert to USDZ (Isaac Sim / Omniverse)
+This exports:
 
-Requires `pxr` from Isaac Sim or Kit, plus `pip install msgpack`:
+```text
+/path/to/my_scene/raw.ply
+```
+
+### 5. Clean and Compress in SuperSplat
+
+Open `raw.ply` in SuperSplat, trim/clean the scene, then export the compressed PLY as:
+
+```text
+/path/to/my_scene/cleaned.ply
+```
+
+Keep spherical harmonics at degree 3 when exporting. Lower SH export settings can lose view-dependent color detail and may not match the USDZ conversion assumptions.
+
+### 6. Convert to USDZ
+
+Requires `pxr` from Isaac Sim or Kit, plus `msgpack`. The helper auto-reruns with Isaac Sim `python.sh` when it can find it.
 
 ```bash
-python tools/usd_convert.py /path/to/my_scene/output/TIMESTAMP/scene.ply
-python tools/usd_convert.py scene.ply scene.usdz --extract-sidecars
+python tools/usd_convert.py /path/to/my_scene/cleaned.ply /path/to/my_scene/scene.usdz
 ```
 
 Import `scene.usdz` in Isaac Sim with `File > Import`.
 
 ## Environment Notes
 
-- Docker image: `3dgrut:spark-cuda130` (CUDA 13.0, COLMAP 4.0.4 GPU SIFT, SM 12.1)
-- Requires NVIDIA Docker (`--runtime=nvidia`) and `xhost +local:docker` for GUI.
-- `dataset.load_exif=false` is set automatically — video-extracted frames don't have per-frame EXIF exposure.
-- Isaac Sim / Kit provides host `pxr`; `usd-core` has no aarch64 PyPI wheel.
-- For large scenes on 128 GB unified memory: reduce `--frames`, `--max-width`, or `--iterations` if you run out of memory.
+- Docker image: `3dgrut:spark-cuda130` by default.
+- Requires NVIDIA Docker and `xhost +local:docker` for COLMAP GUI.
+- Video frames do not carry useful per-frame EXIF exposure, so training disables EXIF loading by default.
+- For large scenes, reduce `--frames`, `--max-width`, or `--iterations` first.
 
-## Container
-
-All wrappers default to `3dgrut:spark-cuda130`. Override with `--image`:
-
-```bash
-python tools/train.py /path/to/my_scene --image your-image-tag
-```
-
-See `pipeline_commands.txt` for the same flow in checklist format.
+See `pipeline_commands.txt` for the same flow as a compact checklist.

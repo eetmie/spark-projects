@@ -269,6 +269,8 @@ def _ensure_vocab_tree(workspace: Path, args) -> Path | None:
 
 
 def _run_gui(workspace: Path, args) -> int:
+    (workspace / "sparse" / "0").mkdir(parents=True, exist_ok=True)
+
     subprocess.run(["xhost", "+local:docker"], capture_output=True)
     display = subprocess.run(
         ["bash", "-c", "echo $DISPLAY"], capture_output=True, text=True
@@ -326,8 +328,6 @@ def _run_mapper_only(workspace: Path, args) -> int:
     images_container = "/data/images"
     sparse_container = "/data/sparse"
 
-    fisheye = args.camera_model in FISHEYE_MODELS
-
     view_graph_step = ""
     if args.view_graph_calibrator:
         view_graph_step = (
@@ -352,7 +352,6 @@ def _run_mapper_only(workspace: Path, args) -> int:
             f"  --output_path {sparse_container}"
         )
 
-    undistort = "" if fisheye else f"\n\n{_undistort(f'{sparse_container}/0', images_container)}"
 
     print(f"Workspace : {workspace}  →  /data")
     print(f"Mapper    : {args.mapper}{' + view_graph_calibrator' if args.view_graph_calibrator else ''}")
@@ -363,7 +362,7 @@ def _run_mapper_only(workspace: Path, args) -> int:
 set -euo pipefail
 source /opt/conda/etc/profile.d/conda.sh && conda activate 3dgrut
 mkdir -p {sparse_container}
-{mapper_cmd}{undistort}
+{mapper_cmd}
 """
 
     cmd = [
@@ -386,7 +385,6 @@ def _run_headless(workspace: Path, args) -> int:
     images  = "/data/images"
     sparse  = "/data/sparse"
     sparse0 = f"{sparse}/0"
-    fisheye = args.camera_model in FISHEYE_MODELS
 
     loop_flags = "--SequentialMatching.loop_detection 0"
     if args.loop_detection:
@@ -450,8 +448,6 @@ def _run_headless(workspace: Path, args) -> int:
             f"  {loop_flags}\n\n"
             f"{mapper_step}"
         )
-        if not fisheye:
-            steps += _undistort(sparse0, images)
 
         print(f"Workspace     : {workspace}  →  /data")
         print(f"Camera model  : {args.camera_model}")

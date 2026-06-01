@@ -28,8 +28,7 @@ SmolVLA CUDA forward + 1-step LoRA smoke test + ONNX export with PyTorch-vs-ONNX
 (max_abs_diff ~2.6e-6, cosine ~1.0). See `smolvla-spark-finetune/STATUS.md`.
 
 ### [`scene-reconstruction/`](scene-reconstruction/) — video → Gaussian splat → Isaac Sim
-Smartphone/wide-angle video → COLMAP → 3DGRUT Gaussian splat → Isaac Sim NuRec USDZ on
-DGX Spark. 3DGRT ray-tracing backend (uses GB10 RT cores). See `scene-reconstruction/README.md`.
+Smartphone video -> COLMAP -> 3DGRUT raw Gaussian splat -> SuperSplat cleanup/compression -> Isaac Sim NuRec USDZ on DGX Spark. See `scene-reconstruction/README.md`.
 
 ### [`orin-nano/`](orin-nano/) — Jetson Orin Nano deploy side (RealSense + SmolVLA TensorRT)
 The deploy counterpart to the Spark playbooks, on a Jetson **Orin Nano** (JetPack 6, PREEMPT_RT

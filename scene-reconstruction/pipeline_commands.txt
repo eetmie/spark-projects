@@ -1,90 +1,63 @@
-# Scene Reconstruction Pipeline — DGX Spark
-# Video → images → COLMAP GUI → 3DGRUT training → PLY → USDZ
-#
-# Image  : 3dgrut:spark-cuda130  (CUDA 13.0, COLMAP 4.0.4 GPU SIFT, SM 12.1 / GB10)
-# Scripts: all tools are Python — no hardcoded paths, run from anywhere.
+# Scene Reconstruction Pipeline - DGX Spark
+# iPhone video -> ffmpeg frames -> COLMAP GUI -> 3DGRUT raw.ply -> SuperSplat cleaned.ply -> USDZ
+# Run from: /home/masi-pgx/spark-projects/scene-reconstruction
 
-# ─── 1. CREATE WORKSPACE ─────────────────────────────────────────────────────
-# Pick any directory. Drop your source video inside it.
-
+# 1. Create a scene folder and copy the iPhone video into it.
 mkdir -p /path/to/my_scene
-cp source_video/home.MOV /path/to/my_scene/
+cp /path/to/video.MOV /path/to/my_scene/
 
-# ─── 2. EXTRACT FRAMES ───────────────────────────────────────────────────────
-# Extracts ~300 JPEG images and creates the full workspace folder structure.
-# (images/, models/, output/ are created automatically)
+# 2. Extract frames with ffmpeg. This creates only images/.
+python tools/extract_video_frames.py /path/to/my_scene/video.MOV
 
-python tools/extract_video_frames.py /path/to/my_scene/home.MOV
-# or with options:
-python tools/extract_video_frames.py /path/to/my_scene/home.MOV --frames 150 --max-width 1280
+# Optional smaller extraction for faster tests:
+# python tools/extract_video_frames.py /path/to/my_scene/video.MOV --frames 150 --max-width 1920 --clear
 
-# ─── 3. OPEN COLMAP GUI ──────────────────────────────────────────────────────
-# Launches COLMAP inside the Docker container with X11 forwarding.
+# Optional blur-aware extraction for handheld/iPhone footage:
+# python tools/extract_video_frames.py /path/to/my_scene/video.MOV --frames 200 --select sharp --clear
+# python tools/extract_video_frames.py /path/to/my_scene/video.MOV --frames 200 --select sharp --candidate-step 2 --clear
+# Sharp mode scores candidates with SIFT + Laplacian and keeps the best frame per time bucket.
 
+# 3. Run COLMAP in the GUI.
 python tools/colmap.py /path/to/my_scene
 
-# Alternative: skip the GUI and run everything automatically (steps 3 + 4 in one):
-# python tools/colmap.py /path/to/my_scene --headless
-# python tools/colmap.py /path/to/my_scene --headless --camera-model OPENCV_FISHEYE  # fisheye lens
-# python tools/colmap.py /path/to/my_scene --headless --camera-model SIMPLE_RADIAL   # fixed lens
-# python tools/colmap.py /path/to/my_scene --headless --matcher exhaustive            # unordered photos
-
-# Inside the COLMAP GUI:
-#
-#   File → New project
+# In COLMAP:
+#   File > New project
 #     Database : /data/database.db
 #     Images   : /data/images
-#   → Save
 #
-#   Processing → Feature extraction
-#     Camera model : OPENCV   ← important for phone lens distortion
-#     ☑ Single camera for all images
-#   → Extract
+#   Processing > Feature extraction
+#     Camera model : OPENCV          # iPhone 1x / normal phone video
+#                    OPENCV_FISHEYE  # iPhone 0.5x / fisheye / action cam
+#     Single camera for all images: enabled
 #
-#   Processing → Sequential matching   ← correct for video (temporally ordered)
-#   → Match
+#   Processing > Sequential matching
+#     Loop detection: off unless the video revisits the same area
 #
-#   Reconstruction → Start reconstruction   (runs the mapper)
-#
-#   File → Save project
-#   File → Quit
+#   Reconstruction > Start reconstruction
+#   File > Save project
+#   File > Quit
 
-# ─── 4. OPTIONAL UNDISTORTION ────────────────────────────────────────────────
-# Both 3DGRT and 3DGUT support distorted cameras (OPENCV_FISHEYE) natively.
-# No linking or undistortion is required — 3dgrut reads images/ and the camera
-# model from sparse/0/cameras.bin directly.
-#
-# Optional: run image_undistorter if you want pinhole/undistorted images
-# (loses FOV at edges for fisheye, but simplifies the camera model):
-# python tools/colmap.py /path/to/my_scene --undistort-only
+# Headless alternative, if you do not want the GUI:
+# python tools/colmap.py /path/to/my_scene --headless
+# python tools/colmap.py /path/to/my_scene --headless --camera-model OPENCV_FISHEYE
 
-# ─── 5. TRAIN 3DGRUT ─────────────────────────────────────────────────────────
-# Default: 3D Gaussian Ray Tracing, 60k iterations, standard GS densification.
-
+# 4. Train 3DGRUT. Default is 3DGRT on DGX Spark.
 python tools/train.py /path/to/my_scene
 
-# Options:
-python tools/train.py /path/to/my_scene --iterations 30000          # quick test
-python tools/train.py /path/to/my_scene --method 3dgut              # rasterization — faster, also supports distorted cameras, no secondary rays
-python tools/train.py /path/to/my_scene --mcmc                      # MCMC densification
-python tools/train.py /path/to/my_scene --mcmc --method 3dgut       # MCMC + unstructured
-python tools/train.py /path/to/my_scene --viser                     # live viewer → localhost:8080
-python tools/train.py /path/to/my_scene --experiment living_room    # custom experiment name
+# Useful training options:
+# python tools/train.py /path/to/my_scene --iterations 30000
+# python tools/train.py /path/to/my_scene --viser
+# python tools/train.py /path/to/my_scene --method 3dgut
 
-# ─── 6. EXPORT PLY ───────────────────────────────────────────────────────────
-# Finds the latest checkpoint and exports scene.ply to output/<timestamp>/.
-
+# 5. Export the direct 3DGRUT PLY.
 python tools/export_scene.py /path/to/my_scene
-# also export raw Gaussian arrays for downstream scripts:
-python tools/export_scene.py /path/to/my_scene --npz
-# or with a specific checkpoint:
-python tools/export_scene.py /path/to/my_scene \
-  --checkpoint /path/to/my_scene/models/scene/ckpt_last.pt
+# Output: /path/to/my_scene/raw.ply
 
-# ─── 7. CONVERT TO USDZ (optional, Isaac Sim / Omniverse) ───────────────────
-# Requires pxr (from Isaac Sim or Kit) and msgpack on the host:
-#   pip install msgpack
+# 6. Open raw.ply in SuperSplat.
+#    Trim/clean/compress, then export as:
+#    /path/to/my_scene/cleaned.ply
+#
+# Important: keep SH degree at 3 in SuperSplat export.
 
-python tools/usd_convert.py /path/to/my_scene/output/.../scene.ply
-# or explicit output path:
-python tools/usd_convert.py scene.ply scene.usdz --extract-sidecars
+# 7. Convert the cleaned/compressed SuperSplat PLY to USDZ.
+python tools/usd_convert.py /path/to/my_scene/cleaned.ply /path/to/my_scene/scene.usdz

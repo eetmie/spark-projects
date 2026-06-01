@@ -5,9 +5,8 @@ Requires pxr (OpenUSD) and msgpack. If host Python is missing them,
 the helper auto-reruns with Isaac Sim's python.sh when available.
 
 Usage:
-    python tools/usd_convert.py scene.ply
-    python tools/usd_convert.py scene.ply scene.usdz
-    python tools/usd_convert.py scene.ply scene.usdz --extract-sidecars
+    python tools/usd_convert.py /path/to/my_scene/cleaned.ply /path/to/my_scene/scene.usdz
+    python tools/usd_convert.py cleaned.ply
 """
 from __future__ import annotations
 
@@ -384,6 +383,8 @@ def main() -> int:
     print(f"Reading  : {ply}")
     positions, rotations, scales, densities, albedo, specular, sh_degree = read_3dgrut_ply(ply)
     print(f"Gaussians: {positions.shape[0]:,}  SH degree: {sh_degree}")
+    if sh_degree != 3:
+        print("Warning  : expected SH degree 3 for the SuperSplat-cleaned pipeline")
 
     print("Building NuRec payload...")
     model_bytes = make_nurec_payload(positions, rotations, scales, densities, albedo, specular, sh_degree)
