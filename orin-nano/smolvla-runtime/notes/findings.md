@@ -2,6 +2,51 @@
 
 Running log. Newest first. (Merges the earlier `smolvla-spark-finetune/jetson/notes`.)
 
+## Static ONNX (no NonZero) + num_steps variants — validated on Spark (2026-06-02)
+
+Re-exported with the `torch.where` fix (see `smolvla-spark-finetune/export_valid_onnx.py`) to kill
+the data-dependent `NonZero` (device→host sync stall + DDS fragility on Orin TRT 10.3). Added a
+`--num-steps` flag to bake fewer denoise steps. **`num_steps` is the flow-matching ODE step count
+(`dt=-1/num_steps; x_t += dt·v_t`), NOT the action chunk (50) and NOT the control dt** — it's
+unrolled into the graph, so changing it needs a re-export. Validated on the Spark (BF16, opt-0,
+warmed):
+
+| ONNX (in spark-finetune/exports) | num_steps | nodes | NonZero | BF16 cosine | infer median (Blackwell) |
+|----------------------------------|-----------|-------|---------|-------------|--------------------------|
+| `smolvla_base_fp32_static.onnx`     | 10 | 108,695 | 0 | 0.9974 | 94.7 ms |
+| `smolvla_base_fp32_static_s5.onnx`  |  5 |  60,480 | 0 | 0.9985 | 63.7 ms |
+
+- `torch.where` rewrite is **bit-identical** to the original (cosine 1.0, max_abs 0 vs `*_valid.onnx`).
+- num_steps 10→5: **~33% faster** inference, ~half the graph (build 248→112 s), fidelity-vs-own-FP32
+  even slightly better. Cost is coarser denoising — a *task-quality* question to judge on the robot,
+  not a numerics one. (3-step would be the next probe if 5 isn't enough.)
+- These are Blackwell/opt-0 absolutes; Orin will be slower. The ~33% step speedup should roughly
+  transfer; measure on-device.
+- **Move to the Orin:** `*_static.onnx` for the apples-to-apples vs the PyTorch demo (both 10-step);
+  `*_static_s5.onnx` for reactive real runs. Both have `.sha256` receipts.
+
+## "10 Hz" is the control rate, NOT inference rate — reframes the target (2026-06-02)
+
+Reference: `~/Desktop/isaacsim_vla_ws-robot-so101_new_calib` (github.com/MyLovelyAxe/isaacsim_vla_ws)
+— a ROS2 + Isaac Sim SO-101 sim2real demo running SmolVLA in **PyTorch inside a container**
+(`smolvla_pytorch27_container`) on an Orin Nano 8 GB. It is the natural baseline to benchmark our
+TRT path against.
+
+Its "10 Hz" is **not** SmolVLA inference speed. Confirmed in the code: `send_observation*.py`
+throttles observations to 10 Hz, `safety_rules.py` records at `DT=0.1` (10 Hz), joint states stream
+at 200 Hz. SmolVLA emits a **50-action chunk per observation, executed open-loop**, and a learned
+**safety estimator** decides when to pull a fresh chunk. So one inference covers up to ~50 control
+steps (~5 s at 10 Hz) — a 200–500 ms inference is hidden behind chunking.
+
+Consequences for our work:
+- The old "p95 < 100 ms = go" bar was wrong. Plain PyTorch already gives 10 Hz *control* via
+  chunking. We are not unlocking a rate PyTorch couldn't reach.
+- The real value of pure-TRT BF16 is **lower inference latency → fresher re-planning/reactivity
+  (safety estimator can request chunks sooner) + lower memory & power**, not a Hz threshold.
+- **Tomorrow's decisive test:** head-to-head *inference latency* (and peak RAM) of the PyTorch
+  container vs our TRT-BF16 engine on the *same* Orin. That is the concrete "is native worth it"
+  number. Our ONNX bakes num_steps=10 — matching the demo's default, so it's a fair comparison.
+
 ## USE BF16, NOT FP16 — precision sweep on the Spark (2026-06-02)
 
 De-risked the whole build on the DGX Spark (GB10/Blackwell, TRT 10.13) before touching the

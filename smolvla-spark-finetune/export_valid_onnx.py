@@ -82,7 +82,13 @@ def patch_smolvla_for_legacy_onnx_export() -> None:
         pos_ids = bucket_coords_h[:, :, None] * self.num_patches_per_side + bucket_coords_w[:, None, :]
         pos_ids = pos_ids.reshape(batch_size, -1).to(torch.int64)
         flat_mask = patch_attention_mask.view(batch_size, -1)
-        position_ids[flat_mask] = pos_ids[flat_mask]
+        # Boolean-mask assignment (position_ids[flat_mask] = pos_ids[flat_mask])
+        # exports to NonZero + GatherND/ScatterND, i.e. data-dependent shapes: TRT
+        # inserts a device->host copy + sync per inference (latency stall) and the
+        # DDS path is the fragile one on Jetson/older TRT. torch.where is equivalent
+        # here (position_ids starts all-zeros, mask is all-true for a full image)
+        # and exports to a static `Where`. See orin-nano notes/findings.md.
+        position_ids = torch.where(flat_mask, pos_ids, position_ids)
         embeddings = embeddings + self.position_embedding(position_ids)
         return embeddings
 
@@ -124,6 +130,11 @@ def main() -> None:
     parser.add_argument("--output", default="exports/smolvla_base_fp32_valid.onnx")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--task", default="Pick up the red cube and place it in the bin.")
+    parser.add_argument("--num-steps", type=int, default=None,
+                        help="Flow-matching denoising steps baked into the graph (default: "
+                             "policy config = 10). Fewer = faster inference, slightly coarser "
+                             "actions. This is the ODE integration count, NOT the action chunk "
+                             "size or the control dt.")
     args = parser.parse_args()
 
     patch_smolvla_for_legacy_onnx_export()
@@ -145,6 +156,14 @@ def main() -> None:
     policy.float()
     for param in policy.parameters():
         param.requires_grad_(False)
+
+    if args.num_steps is not None:
+        # num_steps is read inside sample_actions as self.config.num_steps; set it on
+        # whichever config objects exist so the baked (unrolled) denoise loop uses it.
+        for cfg in (getattr(policy, "config", None), getattr(policy.model, "config", None)):
+            if cfg is not None and hasattr(cfg, "num_steps"):
+                cfg.num_steps = args.num_steps
+        print(f"num_steps set to {args.num_steps}")
 
     img_keys = list(policy.config.image_features.keys())
     active_img_key = img_keys[0]
