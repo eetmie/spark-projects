@@ -2,6 +2,36 @@
 
 Running log. Newest first. (Merges the earlier `smolvla-spark-finetune/jetson/notes`.)
 
+## JetPack 7.2 migration — FP16 deploy, single ORT/TRT-EP backend (2026-06-13)
+
+Board reflashed to **JetPack 7.2**: L4T R39.2.0, Ubuntu 24.04, Python 3.12.3, CUDA 13.2, TensorRT
+**10.16.2**. Two earlier decisions below (pure-TRT primary; "BF16 recommended") are **superseded**:
+
+- **Precision is FP16 on the Orin, not BF16.** On-device `tools/probe_precision.py` (TRT 10.16,
+  compute 8.7): `platform_has_fast_fp16=True`, `platform_has_fast_int8=True`, **`platform_has_fast_bf16
+  = n/a`**. BF16 has no hardware fast path on Orin. The "FP16 is broken (cos 0.805)" sweep below was a
+  *blanket-FP16* engine that forced the whole vision tower to FP16 → exponent overflow. The deploy
+  path now is **FP32 ONNX → ORT TensorRT-EP with `trt_fp16_enable` + `trt_layer_norm_fp32_fallback`
+  + CUDA-EP fallback**, so TRT lowers only what's safe to FP16 and the sensitive norms / fallback ops
+  stay FP32. BF16 (`trt_bf16_enable`) is kept as a *gated experiment* — keep only if logs show real
+  BF16 tactics here AND it beats FP16 on latency + parity. Reference dtype stays PyTorch-BF16 on the
+  Spark.
+- **Single backend; pure-TRT path deleted.** The monolithic `trtexec` engine build OOM'd on 8 GB and
+  was the all-or-nothing path. Removed `build_engine.py` + `backends/trt_engine.py` (and `cuda-python`).
+  ORT's TRT-EP builds engines per-subgraph (lower memory peak) and caches them — it is now the only
+  inference path. `run_pipeline.py --backend ort` / `parity.py` both run it.
+- **Build memory fix:** 8 GB is *unified*. Grow swap to 16 GB on the NVMe (`system/setup-swap.sh`) +
+  MAXN_SUPER + pinned clocks (`system/`) so the first engine build fits. Prefer the 5-step ONNX
+  (`*_static_s5.onnx`, ~60k nodes) for the first build to shrink it further.
+- **Camera:** RGB-only via librealsense RSUSB build (`realsense-rgb/`) — no kernel patches on 7.2.
+- **onnxruntime-gpu for CUDA 13 — RESOLVED.** No `jp7` index exists on Jetson AI Lab; the CUDA-13
+  aarch64 wheels are under the **`sbsa`** index. `onnxruntime-gpu==1.24.0` from
+  `https://pypi.jetson-ai-lab.io/sbsa/cu130` installs (cp312) and reports
+  `['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']`. No source build
+  needed. (numpy resolves to 1.26.4.) Benign DRM-probe warning on import; CUDA EP works regardless.
+
+--- everything below predates the JetPack 7.2 migration (Spark-era / JetPack 6) ---
+
 ## Static ONNX (no NonZero) + num_steps variants — validated on Spark (2026-06-02)
 
 Re-exported with the `torch.where` fix (see `smolvla-spark-finetune/export_valid_onnx.py`) to kill
@@ -47,7 +77,12 @@ Consequences for our work:
   container vs our TRT-BF16 engine on the *same* Orin. That is the concrete "is native worth it"
   number. Our ONNX bakes num_steps=10 — matching the demo's default, so it's a fair comparison.
 
-## USE BF16, NOT FP16 — precision sweep on the Spark (2026-06-02)
+## [SUPERSEDED on Orin — see top] USE BF16, NOT FP16 — precision sweep on the Spark (2026-06-02)
+
+> Superseded for *Orin deployment*: this sweep forced a blanket-FP16 engine on Blackwell. On the
+> Orin (compute 8.7) BF16 isn't hardware-accelerated, and the partitioned ORT/TRT-EP FP16 path keeps
+> the overflowing vision-tower ops in FP32. Still useful for *why* blanket-FP16 overflows.
+
 
 De-risked the whole build on the DGX Spark (GB10/Blackwell, TRT 10.13) before touching the
 Nano — same TRT 10.x family, so build-time op support and FP16/BF16 numerics transfer; only the
@@ -78,7 +113,12 @@ the 8 GB Nano. Raw numbers: `smolvla-spark-finetune/exports/precision_sweep_spar
 Open question for the Nano: BF16 ~104 ms on *Blackwell* → Orin will be slower; hitting 10 Hz may
 need fewer denoise steps (re-export), independent of precision.
 
-## Decision: pure TensorRT engine as the primary path
+## [SUPERSEDED on Orin — see top] Decision: pure TensorRT engine as the primary path
+
+> Superseded: the pure-TRT engine build OOM'd on the 8 GB Orin and is deleted. ORT/TRT-EP (which was
+> the "diagnostic" here) is now the single backend. The catch-list below is still an accurate map of
+> SmolVLA's TRT-unfriendly ops.
+
 
 Chose the serialized `.engine` + TensorRT 10.x API + `cuda-python` over the ORT TensorRT-EP path
 for latency. ORT-TRT-EP is retained as a **diagnostic/fallback** backend because pure TRT has one

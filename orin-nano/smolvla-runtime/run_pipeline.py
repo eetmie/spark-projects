@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SmolVLA model pipeline on Jetson Orin Nano.
+"""SmolVLA model pipeline on Jetson Orin Nano (JetPack 7.2).
 
-    RealSense D435i RGB  ->  SmolVLA (pure TensorRT engine)  ->  action chunk
+    RealSense D435i RGB  ->  SmolVLA (ONNX Runtime + TensorRT EP)  ->  action chunk
 
 This is the model pipeline ONLY — it never sends commands to a robot. It reads
 the latest RGB frame, runs one SmolVLA inference, and reports the action-chunk
@@ -9,25 +9,25 @@ shape, a preview, and latency. Mapping actions onto a real robot's command space
 (normalization, limits, safety) is intentionally out of scope here.
 
 Backends:
-  trt   pure TensorRT engine        (primary, fastest)  --engine-path model.engine
-  ort   ONNX Runtime + TRT-EP       (diagnostic/fallback) --onnx-path model.onnx
-  mock  zero actions, no model      (plumbing check)
+  ort   ONNX Runtime + TensorRT EP (the deployment path)  --onnx-path model.onnx
+        --precision fp16 (default, accelerated on Orin) | bf16 (experimental)
+  mock  zero actions, no model     (camera + loop plumbing check)
 
 Sources:
-  --source realsense   the D435i (default)
+  --source realsense   the D435i RGB stream (default)
   --source synthetic   a generated frame (run with no camera / no ONNX)
 
 Examples
 --------
-    # 1. Plumbing only — no model, no camera needed beyond the source:
-    python run_pipeline.py --backend mock --source synthetic --duration-s 5
+    # 1. Plumbing only — no model, just confirm the camera + loop:
+    python run_pipeline.py --backend mock --source realsense --duration-s 5
 
-    # 2. Pure TRT engine, synthetic frames (validate the engine before the camera):
-    python run_pipeline.py --backend trt --engine-path exports/smolvla.engine \
+    # 2. ORT/TRT-EP, synthetic frames (builds + caches the engine, no camera needed):
+    python run_pipeline.py --backend ort --onnx-path exports/smolvla.onnx \
         --model-id lerobot/smolvla_base --source synthetic --duration-s 20 --show-actions
 
-    # 3. Pure TRT engine + real D435i:
-    python run_pipeline.py --backend trt --engine-path exports/smolvla.engine \
+    # 3. ORT/TRT-EP + real D435i RGB:
+    python run_pipeline.py --backend ort --onnx-path exports/smolvla.onnx \
         --model-id lerobot/smolvla_base --source realsense --duration-s 30 --show-actions
 """
 
@@ -58,17 +58,13 @@ def build_backend(args):
     if args.backend == "mock":
         from smolvla_runtime.backends.mock import MockBackend
         return MockBackend()
-    if args.backend == "trt":
-        if not args.engine_path:
-            raise SystemExit("--engine-path is required for --backend trt (build it with build_engine.py).")
-        from smolvla_runtime.backends.trt_engine import TRTBackend
-        return TRTBackend(args.engine_path, model_id=args.model_id, fixed_noise=args.fixed_noise)
     if args.backend == "ort":
         if not args.onnx_path:
             raise SystemExit("--onnx-path is required for --backend ort.")
-        from smolvla_runtime.backends.ort_trt import ORTBackend
+        from smolvla_runtime.backends.ort import ORTBackend
         return ORTBackend(args.onnx_path, model_id=args.model_id,
-                          engine_cache_dir=args.engine_cache_dir, fixed_noise=args.fixed_noise)
+                          engine_cache_dir=args.engine_cache_dir,
+                          precision=args.precision, fixed_noise=args.fixed_noise)
     raise SystemExit(f"unknown backend {args.backend}")
 
 
@@ -90,10 +86,12 @@ def summarize_actions(actions, n=8):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--backend", choices=("mock", "trt", "ort"), default="mock")
+    ap.add_argument("--backend", choices=("mock", "ort"), default="mock")
     ap.add_argument("--source", choices=("realsense", "synthetic"), default="realsense")
-    ap.add_argument("--engine-path", help="Pure-TRT .engine (--backend trt).")
-    ap.add_argument("--onnx-path", help="ONNX (--backend ort).")
+    ap.add_argument("--onnx-path", help="FP32 ONNX (--backend ort).")
+    ap.add_argument("--precision", choices=("fp16", "bf16"), default="fp16",
+                    help="TRT-EP reduced precision. fp16 = Orin deploy default; "
+                         "bf16 = experimental (not hardware-accelerated on compute 8.7).")
     ap.add_argument("--engine-cache-dir", default="/tmp/smolvla_trt_cache")
     ap.add_argument("--model-id", default="lerobot/smolvla_base",
                     help="HF id or local dir for the tokenizer.")
@@ -122,7 +120,7 @@ def main() -> int:
     source.start()
     if not source.wait_for_first_frame(timeout_s=5.0):
         LOG.error("No frame from source within 5 s. Is the D435i connected? "
-                  "(RealSense kernel modules must be loaded — see ../realsense-rt.)")
+                  "(librealsense RGB must be installed — see ../realsense-rgb.)")
         source.stop()
         return 1
 

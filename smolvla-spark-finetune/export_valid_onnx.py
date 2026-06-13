@@ -7,19 +7,77 @@ workflow:
   - force export math/weights to float32 so ONNX Runtime accepts the graph
   - keep dynamic batch, fixed image/token/action shapes
   - validate the resulting ONNX with onnx.checker and ORT CPU session creation
+  - SAVE THE TOKENIZER next to the ONNX, and bundle the normalization stats, so the
+    Orin gets a vocab-exact, self-contained deploy bundle (no "guess the backbone").
 
-On Jetson, build the TensorRT engine from this ONNX with FP16 enabled. That is
-preferable to carrying bfloat16 through ONNX, because Orin TensorRT does not
-want bfloat16 model inputs around Conv/MatMul nodes.
+On Jetson the ONNX runs through ONNX Runtime's TensorRT execution provider with
+**FP16** (the Orin builds + caches the TensorRT engine itself per-subgraph — no
+trtexec, no separate .engine build). FP16 (not bfloat16) is the right Orin dtype:
+Orin (compute 8.7) has no fast BF16, and Orin TensorRT dislikes bfloat16 inputs
+around Conv/MatMul. The graph stays FP32 here; the TRT-EP lowers what's safe to FP16
+and keeps layernorm/sensitive ops in FP32.
+
+If on-Orin FP16 parity ever fails (non-finite / cosine drop from the vision tower's
+`inf` attention-mask constants), re-export with --fp16-safe-masks to clamp those
+sentinels to a finite value. Leave it OFF until proven necessary.
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import shutil
 from pathlib import Path
 
 import torch
+
+
+def clamp_inf_constants_for_fp16(onnx_path: str, finite: float = 1.0e4) -> int:
+    """Replace inf / sentinel-huge constants in the ONNX with a FP16-safe finite.
+
+    The SmolVLM vision self-attn bakes additive attention-mask sentinels of
+    `torch.finfo(dtype).min` (~-3.4e38) / `-inf`. In FP32/BF16 that's fine; under the
+    Orin's FP16 TensorRT-EP they overflow (clip to +/-65504) and softmax/layernorm can
+    diverge. We only touch clearly-sentinel magnitudes (|x| >= 1e30 or non-finite) so
+    real weights are never altered. Returns the number of tensors changed.
+    """
+    import numpy as np
+    import onnx
+    from onnx import numpy_helper
+
+    model = onnx.load(onnx_path)  # loads external data alongside if present
+
+    def fix(tensor) -> bool:
+        arr = numpy_helper.to_array(tensor)
+        if not np.issubdtype(arr.dtype, np.floating):
+            return False
+        bad = ~np.isfinite(arr) | (np.abs(arr) >= 1.0e30)
+        if not bad.any():
+            return False
+        out = arr.copy()
+        out[bad & (arr < 0)] = -finite
+        out[bad & (arr >= 0)] = finite
+        new = numpy_helper.from_array(out.astype(arr.dtype), tensor.name)
+        tensor.CopyFrom(new)
+        return True
+
+    changed = 0
+    for init in model.graph.initializer:
+        changed += int(fix(init))
+    for node in model.graph.node:
+        if node.op_type == "Constant":
+            for attr in node.attribute:
+                if attr.name == "value":
+                    changed += int(fix(attr.t))
+    if changed:
+        # Save with external data: this graph is ~1.5 GB and would blow protobuf's
+        # 2 GB single-file limit if serialized inline. Produces <name>.onnx + .data.
+        onnx.save(
+            model, onnx_path,
+            save_as_external_data=True, all_tensors_to_one_file=True,
+            location=Path(onnx_path).name + ".data", size_threshold=1024,
+        )
+    return changed
 
 
 def patch_smolvla_for_legacy_onnx_export() -> None:
@@ -135,6 +193,10 @@ def main() -> None:
                              "policy config = 10). Fewer = faster inference, slightly coarser "
                              "actions. This is the ODE integration count, NOT the action chunk "
                              "size or the control dt.")
+    parser.add_argument("--fp16-safe-masks", action="store_true",
+                        help="Clamp inf/sentinel attention-mask constants to a finite value so the "
+                             "Orin's FP16 TensorRT-EP path stays numerically safe. Leave OFF unless "
+                             "on-Orin FP16 parity.py fails (non-finite / cosine drop).")
     args = parser.parse_args()
 
     patch_smolvla_for_legacy_onnx_export()
@@ -232,11 +294,44 @@ def main() -> None:
             dynamo=False,
         )
 
+    if args.fp16_safe_masks:
+        n = clamp_inf_constants_for_fp16(str(output))
+        print(f"--fp16-safe-masks: clamped {n} inf/sentinel constant tensor(s) to +/-1e4")
+
     import onnx
 
     model = onnx.load(str(output), load_external_data=False)
     onnx.checker.check_model(model)
     print(f"ONNX checker OK: {output} ({output.stat().st_size / 1e6:.1f} MB)")
+
+    # --- deploy bundle: tokenizer + normalization stats next to the ONNX ----------
+    # The Orin loads the tokenizer with --model-id <dir>/tokenizer (vocab-exact, no
+    # network, no backbone guessing). The normalization stats are needed later when the
+    # Orin maps padded model actions onto real robot commands (un-normalize) and feeds
+    # normalized state in. We ship them together so the bundle is self-contained.
+    bundle = output.parent
+    tok_dir = bundle / "tokenizer"
+    tokenizer.save_pretrained(tok_dir)
+    print(f"Saved tokenizer -> {tok_dir}  (use on Orin: --model-id {tok_dir})")
+
+    src = Path(args.model_id)
+    if not src.is_dir():
+        try:
+            from huggingface_hub import snapshot_download
+            src = Path(snapshot_download(
+                args.model_id,
+                allow_patterns=["*preprocessor*", "*postprocessor*", "config.json"],
+            ))
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARN: could not resolve normalization stats for {args.model_id}: {exc}")
+            src = None
+    copied = []
+    if src is not None:
+        for f in sorted(src.glob("*")):
+            if any(k in f.name for k in ("preprocessor", "postprocessor")):
+                shutil.copy2(f, bundle / f.name)
+                copied.append(f.name)
+    print(f"Bundled normalization stats: {copied or 'NONE FOUND — un-normalization stats missing'}")
 
     import onnxruntime as ort
 

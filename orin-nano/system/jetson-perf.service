@@ -1,0 +1,22 @@
+# Persistent MAXN_SUPER + pinned clocks at every boot.
+#
+# Install:
+#   sudo cp system/jetson-perf.service /etc/systemd/system/jetson-perf.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now jetson-perf.service
+#
+# The leading '-' on the nvpmodel ExecStart makes systemd ignore a non-zero exit
+# when the mode is already set (nvpmodel returns non-zero in that case).
+
+[Unit]
+Description=Orin Nano: MAXN_SUPER power mode + pinned clocks
+After=nvpmodel.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=-/usr/sbin/nvpmodel -m 2
+ExecStart=/usr/bin/jetson_clocks
+
+[Install]
+WantedBy=multi-user.target

@@ -1,34 +1,45 @@
 # orin-nano
 
-Jetson **Orin Nano** (8 GB, L4T R36.4.4 / JetPack 6, kernel `5.15.148-rt-tegra` PREEMPT_RT) —
-the *deploy* side of the Spark playbooks. Where the DGX Spark trains and exports, this board runs
-the model and (eventually) the robot.
+Jetson **Orin Nano Super** (8 GB, **JetPack 7.2** / L4T R39.2.0, Ubuntu 24.04, Python 3.12,
+CUDA 13.2, TensorRT 10.16) — the *deploy* side of the Spark playbooks. Where the DGX Spark trains
+and exports, this board runs the model and (eventually) the robot.
 
-> Top-level on purpose: this is general Orin Nano infrastructure, not tied to one model. The
-> RealSense + RT-kernel setup underpins anything camera-driven on this board.
+> Top-level on purpose: general Orin Nano infrastructure, not tied to one model.
 
 ## Subfolders
 
-### [`realsense-rt/`](realsense-rt/) — RealSense D435i on the RT kernel
-Reproducible build of the six RealSense kernel modules against the PREEMPT_RT kernel + a CUDA
-librealsense, so the D435i runs on the kernel-UVC backend (not the userspace RSUSB fallback) while
-keeping PREEMPT_RT for the 100 Hz control loop. **Done and live-verified**; this is the recipe.
+### [`system/`](system/) — performance + memory setup
+MAXN_SUPER power mode + pinned clocks (one-shot script and a persistent systemd unit), and a 16 GB
+swapfile so the TensorRT engine build fits in the 8 GB unified memory. Also the note on getting
+`onnxruntime-gpu` for CUDA 13.
 
-### [`smolvla-runtime/`](smolvla-runtime/) — SmolVLA model pipeline (pure TensorRT)
-`RealSense RGB → SmolVLA (pure TensorRT engine) → action chunk`. The compatibility layer that runs
-the SmolVLA ONNX exported on the Spark ([`../smolvla-spark-finetune/`](../smolvla-spark-finetune/))
-through a native TensorRT engine. No robot control yet — model pipeline only. Plumbing + real
-camera path verified; engine path awaits the Spark ONNX.
+### [`realsense-rgb/`](realsense-rgb/) — D435i RGB, no kernel patches
+librealsense built with the userspace USB backend (`FORCE_RSUSB_BACKEND=ON`) for the D435i **color**
+stream only. Runs on the stock JetPack 7.2 kernel — no PREEMPT_RT, no UVC metadata patches, no
+HID-sensor modules. (Depth + onboard IMU + an RT control loop are deferred; they're what needed the
+kernel work before.)
+
+### [`smolvla-runtime/`](smolvla-runtime/) — SmolVLA model pipeline (ORT + TensorRT EP)
+`RealSense RGB → SmolVLA (ONNX Runtime + TensorRT EP) → action chunk`. Runs the SmolVLA ONNX
+exported on the Spark ([`../smolvla-spark-finetune/`](../smolvla-spark-finetune/)) through ORT's
+TensorRT execution provider (FP16, engine-cached). No robot control yet — model pipeline only.
 
 ## The boundary
 
 ```
 DGX Spark (GB10)                    Orin Nano (this board)
 ────────────────                    ──────────────────────
-fine-tune SmolVLA (LeRobot)         build TensorRT engine from ONNX
-export + parity-check ONNX     ──>  run pure-TRT inference (camera → actions)
-                                    (later) map actions → robot control
+fine-tune SmolVLA (LeRobot)         ORT/TensorRT-EP builds + caches the engine from ONNX
+export + parity-check FP32 ONNX ──> run inference (camera → actions), FP16
+                                    (later) map actions → kaivuriprokkis control
 ```
 
-A TensorRT engine is hardware/version specific — it is **built here, never copied from the Spark**.
-The ONNX is the portable artifact; the engine is a local cache.
+The cached TensorRT engine is hardware/version specific — it is **built here, never copied from the
+Spark**. The FP32 ONNX is the portable artifact; the engine cache is local.
+
+## Bring-up order
+
+1. `system/` — `./power-max.sh`, `sudo ./setup-swap.sh`, install `jetson-perf.service`.
+2. `realsense-rgb/` — `./install-realsense-rgb.sh`, plug in the D435i, verify.
+3. `smolvla-runtime/` — venv (`--system-site-packages`) + `onnxruntime-gpu`, drop in the Spark ONNX,
+   run.

@@ -31,11 +31,12 @@ SmolVLA CUDA forward + 1-step LoRA smoke test + ONNX export with PyTorch-vs-ONNX
 Smartphone video -> COLMAP -> 3DGRUT raw Gaussian splat -> SuperSplat cleanup/compression -> Isaac Sim NuRec USDZ on DGX Spark. See `scene-reconstruction/README.md`.
 
 ### [`orin-nano/`](orin-nano/) — Jetson Orin Nano deploy side (RealSense + SmolVLA TensorRT)
-The deploy counterpart to the Spark playbooks, on a Jetson **Orin Nano** (JetPack 6, PREEMPT_RT
-kernel). Two parts: `realsense-rt/` builds the RealSense D435i kernel modules against the RT kernel
-(reproducible, live-verified), and `smolvla-runtime/` runs the SmolVLA ONNX exported by
-`smolvla-spark-finetune/` through a **pure TensorRT engine** (camera → model → action chunk; no
-robot control yet). Engines are built on-device — never copied from the Spark.
+The deploy counterpart to the Spark playbooks, on a Jetson **Orin Nano Super** (**JetPack 7.2**,
+stock kernel). `system/` sets MAXN_SUPER + swap, `realsense-rgb/` builds librealsense for the D435i
+RGB stream (RSUSB, no kernel patches), and `smolvla-runtime/` runs the SmolVLA ONNX exported by
+`smolvla-spark-finetune/` through **ONNX Runtime + the TensorRT execution provider** (FP16, engine-
+cached; camera → model → action chunk; no robot control yet). The engine cache is built on-device —
+never copied from the Spark.
 
 ## Notes
 - `pi05-spark-inference/phase2/openpi_on_thor/` contains scripts adapted from NVIDIA /

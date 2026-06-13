@@ -7,9 +7,9 @@ Fine-tune SmolVLA on this GB10 machine, export ONNX here, then run inference on 
 The important boundary is:
 
 - GB10 machine: PyTorch, LeRobot training, ONNX export, ONNX structural validation.
-- Jetson Orin Nano: TensorRT engine build from ONNX, then TensorRT inference.
+- Jetson Orin Nano: ONNX Runtime + TensorRT EP inference (FP16); the TRT engine is auto-built + cached from the ONNX on first run.
 
-The Orin Nano can usually build a TensorRT engine from a valid ONNX file, although first build may be slow and memory-sensitive. It is not the right place to export PyTorch/LeRobot checkpoints to ONNX.
+The Orin Nano builds + caches its TensorRT engine from a valid ONNX via ONNX Runtime's TensorRT EP — the first build is slow and memory-sensitive (needs the swap + MAXN_SUPER from `orin-nano/system/`). It is not the right place to export PyTorch/LeRobot checkpoints to ONNX.
 
 ## Current Environment
 
@@ -25,10 +25,14 @@ The Orin Nano can usually build a TensorRT engine from a valid ONNX file, althou
 
 PyTorch CUDA is working. A dummy SmolVLA CUDA forward produced a valid action chunk on GB10.
 
+Deploy target (Orin Nano, JetPack 7.2): Python 3.12, CUDA 13.2, TensorRT 10.16, `onnxruntime-gpu
+1.24.0` from `pypi.jetson-ai-lab.io/sbsa/cu130`. ONNX opset 17 here loads on that ORT 1.24 (verified).
+FP16 deploy (BF16 N/A on compute 8.7).
+
 ## Directory Layout
 
-- `export_valid_onnx.py`: conservative ONNX export script. Produces FP32 ONNX so Jetson TensorRT can build FP16.
-- `exports/`: valid ONNX exports and future TensorRT artifacts.
+- `export_valid_onnx.py`: conservative ONNX export script. Produces FP32 ONNX (the Orin's ORT TensorRT-EP lowers it to FP16 on device) plus a deploy bundle: `exports/tokenizer/` + normalization stats.
+- `exports/`: valid ONNX exports + the deploy bundle (tokenizer/, normalization stats) for the Orin.
 - `datasets/lerobot_svla_so101_pickplace`: original downloaded official SO-101-ish smoke-test dataset. Videos are AV1; keep as source copy.
 - `datasets/lerobot_svla_so101_pickplace_h264`: H.264 working copy used only for local stack smoke tests.
 - `outputs/`: LeRobot training outputs/checkpoints.
@@ -195,30 +199,41 @@ WANDB_MODE=disabled .venv/bin/lerobot-train \
 
 Then try longer runs after confirming loss/logs look sane.
 
-## Jetson TensorRT Plan
+## Jetson deploy path (ONNX Runtime + TensorRT EP)
+
+The Orin side was rebuilt for JetPack 7.2 (2026-06-13). It does **NOT** use `trtexec` / a pure
+`.engine` build any more — that monolithic build OOM'd on the Orin's 8 GB shared memory. Instead it
+runs the ONNX through **ONNX Runtime's TensorRT execution provider** at **FP16**: ORT partitions the
+graph, builds + caches a TensorRT engine per supported subgraph on first run, and falls back to the
+CUDA EP for the rest. One inference path, no separate engine-build step. (Why FP16 not BF16: Orin =
+compute 8.7 has no fast BF16; `platform_has_fast_bf16 = n/a`. FP16 is the accelerated dtype, with
+layernorm/sensitive ops kept FP32.)
 
 Recommended path:
 
-1. Export ONNX on GB10.
-2. Copy `exports/*.onnx` plus tokenizer/preprocess/postprocess code to Jetson.
-3. On Jetson, build a TensorRT engine from ONNX with FP16 enabled.
-4. Run inference with a TensorRT runner.
+1. Export ONNX on GB10 with `export_valid_onnx.py` — this now also writes a **deploy bundle** next to
+   the ONNX: `tokenizer/` (vocab-exact, from the checkpoint's processor) + the normalization stats
+   (`policy_preprocessor*` / `policy_postprocessor*`).
+2. Copy the whole bundle to the Orin's `orin-nano/smolvla-runtime/exports/`: the `*.onnx`
+   (+ `*.onnx.data` sidecar if present), the `tokenizer/` dir, and the normalization stats.
+3. On the Orin (one-time): `pip install onnxruntime-gpu` from the **`sbsa/cu130`** Jetson AI Lab
+   index (there is no `jp7` index; CUDA-13 aarch64 wheels live under `sbsa`). Verified:
+   `onnxruntime-gpu 1.24.0` with TensorRT + CUDA + CPU EPs.
+4. Run: `python run_pipeline.py --backend ort --onnx-path exports/<name>.onnx
+   --model-id exports/tokenizer --source realsense`. First run builds + caches the engine (minutes,
+   needs the 16 GB swap + MAXN_SUPER from `orin-nano/system/`); later runs load from cache.
+5. Gate before trusting actions: `python parity.py --onnx exports/<name>.onnx
+   --model-id exports/tokenizer` (FP16 vs FP32-CPU, expect cosine ≥ 0.997, all finite). If it FAILS
+   (non-finite / cosine drop from the vision tower's `inf` mask constants), re-export here with
+   `--fp16-safe-masks` and repeat.
 
-Likely Jetson command shape for TensorRT 10 / recent JetPack:
+Do not export PyTorch/LeRobot to ONNX on the Orin Nano — do that on GB10. The cached TensorRT engine
+is built on the target Orin and is not portable from the GB10.
 
-```bash
-trtexec \
-  --onnx=smolvla_base_fp32_valid.onnx \
-  --saveEngine=smolvla_base_fp16.engine \
-  --fp16 \
-  --memPoolSize=workspace:4096
-```
-
-Older TensorRT examples may use `--workspace=4096` instead of `--memPoolSize=workspace:4096`.
-
-Expect this to be the next hard part. The Orin Nano has limited shared memory, and this monolithic graph is about 1.5 GB as FP32 ONNX. ONNX-to-TensorRT build on the Orin Nano is plausible, but not guaranteed: unsupported ops, tactic memory, or builder OOM may stop it. If full monolithic TensorRT build fails, the fallback is to split the graph, reduce exported scope/precision, or build a smaller runtime around subgraphs.
-
-Do not export PyTorch/LeRobot to ONNX on the Orin Nano. Do that on GB10. TensorRT engines should be built on the target Jetson or a very similar Jetson/TensorRT/CUDA stack; a GB10-built engine is not the right artifact for Orin.
+> Note: the exported graph is `model.sample_actions` only — it does NOT normalize `state` or
+> un-normalize `actions` (those live in the bundled `policy_preprocessor`/`postprocessor`). The Orin
+> "model pipeline" stage runs raw; applying the normalization stats is required before driving a real
+> robot.
 
 ## Archived Failed Artifacts
 

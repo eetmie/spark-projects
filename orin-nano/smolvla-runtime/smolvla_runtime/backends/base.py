@@ -2,7 +2,7 @@
 
 A backend takes one RGB frame + a language instruction (+ optional robot state)
 and returns an action chunk. The pipeline does not care *how* the actions are
-produced — pure-TRT engine, ORT TensorRT-EP, or a mock — only that every backend
+produced — the ORT TensorRT-EP runtime or a mock — only that every backend
 honours this contract.
 """
 
@@ -18,7 +18,7 @@ import numpy as np
 class PredictResult:
     actions: np.ndarray          # [chunk_size, action_dim], float32
     latency_ms: float            # wall-clock for the inference call only
-    backend: str                 # short backend id, e.g. "trt-engine"
+    backend: str                 # short backend id, e.g. "ort"
     extra: dict = field(default_factory=dict)
 
 

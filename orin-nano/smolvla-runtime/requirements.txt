@@ -1,22 +1,27 @@
-# SmolVLA Orin-Nano runtime — Python deps for JetPack 6 / L4T R36.4.x / Python 3.10 / aarch64.
+# SmolVLA Orin-Nano runtime — Python deps for JetPack 7.2 / L4T R39.2 /
+# Ubuntu 24.04 / Python 3.12 / CUDA 13.2 / TensorRT 10.16 / aarch64.
 #
 # IMPORTANT: create the venv with --system-site-packages so the JetPack-provided
-# `tensorrt` (10.3) and the librealsense-built `pyrealsense2` are visible:
+# `tensorrt` (10.16) and the librealsense-built `pyrealsense2` are visible:
 #
 #     python3 -m venv --system-site-packages .venv
 #     source .venv/bin/activate
 #     pip install -r requirements.txt
 #
-# tensorrt itself is NOT pip-installed here — it ships with JetPack. Confirm with:
-#     python -c "import tensorrt; print(tensorrt.__version__)"   # -> 10.3.0
+# tensorrt and pyrealsense2 are NOT pip-installed — tensorrt ships with JetPack,
+# pyrealsense2 comes from the librealsense RSUSB build (see ../realsense-rgb).
+# Confirm both:
+#     python -c "import tensorrt; print(tensorrt.__version__)"        # -> 10.16.x
+#     python -c "import pyrealsense2 as rs; print('pyrealsense2 ok')"
 
-numpy<2                 # Jetson CUDA wheels expect numpy 1.x
-cuda-python>=12.6,<13   # device buffers for the pure-TRT runtime; pin to the CUDA 12.x series
-                        # (13.x targets CUDA 13 and breaks against this 12.6 toolkit). Import via
-                        # `from cuda.bindings import runtime` (cuda.cudart is deprecated).
-transformers            # tokenizer only (AutoTokenizer for the language instruction)
-pillow                  # quality image resize in preprocess
+numpy           # onnxruntime-gpu 1.24.0 pulls numpy 1.26.x; leave unpinned, let it resolve.
+transformers    # tokenizer only (AutoTokenizer for the language instruction; no torch needed)
+sentencepiece   # backend for the SmolVLM2/SmolLM2 tokenizer conversion
+pillow          # quality image resize in preprocess
 
-# --- ort backend only (diagnostic / fallback) ----------------------------------
-# onnxruntime-gpu has NO aarch64 GPU wheel on PyPI — use the Jetson AI Lab index:
-#     pip install onnxruntime-gpu==1.24.0 --extra-index-url https://pypi.jetson-ai-lab.io/jp6/cu126
+# --- inference backend (required) ----------------------------------------------
+# onnxruntime-gpu for CUDA 13 + cp312 + aarch64. There is no PyPI wheel; the
+# Jetson AI Lab CUDA-13 builds live under the **sbsa** index (NOT a jp7 path — there
+# is no jp7 index). Verified working: onnxruntime-gpu 1.24.0 with TensorRT + CUDA EPs.
+#     pip install onnxruntime-gpu --extra-index-url https://pypi.jetson-ai-lab.io/sbsa/cu130
+onnxruntime-gpu==1.24.0   # --extra-index-url https://pypi.jetson-ai-lab.io/sbsa/cu130

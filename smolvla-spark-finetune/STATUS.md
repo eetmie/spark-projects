@@ -19,8 +19,8 @@ Experimental but locally verified on NVIDIA GB10.
 
 - Exporting a fine-tuned LoRA checkpoint after a real training run.
 - Merging LoRA weights into a self-contained checkpoint for deployment export.
-- TensorRT engine build on Jetson Orin Nano.
-- TensorRT-vs-ONNX parity on Jetson.
+- ORT TensorRT-EP engine build (FP16) on Jetson Orin Nano.
+- On-Orin FP16-vs-FP32 parity.
 - Real robot preprocessing/postprocessing loop.
 - Useful task-specific behavior from the fixture dataset.
 - Real SO-101 / SO-100 hardware inference.
@@ -30,6 +30,6 @@ Experimental but locally verified on NVIDIA GB10.
 1. Fine-tune SmolVLA on GB10 using LeRobot.
 2. Export ONNX on GB10.
 3. Run PyTorch-vs-ONNX parity on GB10.
-4. Copy ONNX and runtime code to Jetson Orin Nano.
-5. Build TensorRT engine on the Jetson.
-6. Run TensorRT parity and then robot integration.
+4. Copy the deploy bundle (ONNX + `tokenizer/` + normalization stats) to the Orin Nano.
+5. Run via ONNX Runtime's TensorRT EP at FP16 — the Orin auto-builds + caches the engine (no trtexec).
+6. Run on-Orin FP16 parity, then robot integration.
