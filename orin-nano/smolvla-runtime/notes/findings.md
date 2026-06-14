@@ -107,7 +107,7 @@ pins matched nothing (engine came out byte-identical to plain FP16). BF16 sidest
 Also confirmed on the Spark: **the pure-TRT build succeeds** — the vision-tower masked-indexing
 ops (`NonZero` ×2, `GatherND`, `ScatterND` ×543) are accepted by TRT 10.x, no hard abort. Build
 took ~4 min at opt-level 0 on Blackwell for a 108k-node graph; budget much longer + OOM-watch on
-the 8 GB Nano. Raw numbers: `smolvla-spark-finetune/exports/precision_sweep_spark.json`.
+the 8 GB Nano. Raw numbers: `smolvla-spark-finetune/precision_sweep_spark.json`.
 
 → `build_engine.py --precision bf16 --static-batch` is the recipe; `parity.py` threshold is 0.997.
 Open question for the Nano: BF16 ~104 ms on *Blackwell* → Orin will be slower; hitting 10 Hz may

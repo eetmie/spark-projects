@@ -1,0 +1,19 @@
+{
+  "what": "SmolVLA FP32-ONNX vs TRT-engine precision sweep, run on DGX Spark (GB10/Blackwell, TRT 10.13) as a cheap proxy before the Orin Nano (Ampere, TRT 10.3)",
+  "onnx": "smolvla_base_fp32_valid.onnx",
+  "reference": "ORT CPU FP32 (true FP32), identical seeded inputs",
+  "builder": "trtexec --builderOptimizationLevel=0 --skipInference, static batch=1 profile",
+  "results": [
+    {"precision": "fp32(tf32)", "cosine": 0.999997, "max_abs": 1.29e-3, "infer_ms_blackwell": 165, "verdict": "correct, slowest"},
+    {"precision": "fp16",       "cosine": 0.805256, "max_abs": 3.07e-1, "infer_ms_blackwell": 43,  "verdict": "BROKEN - vision-tower fp16 overflow (inf attn constants)"},
+    {"precision": "fp16+bf16",  "cosine": 0.805256, "max_abs": 3.07e-1, "infer_ms_blackwell": 44,  "verdict": "BROKEN - TRT picks fp16 for the sensitive layers"},
+    {"precision": "bf16",       "cosine": 0.997395, "max_abs": 6.93e-2, "infer_ms_blackwell": 104, "verdict": "near-lossless, RECOMMENDED (fp32 dynamic range, tensor-core speed)"}
+  ],
+  "key_findings": [
+    "Pure-TRT build succeeds: NonZero/ScatterND from vision_model masked-indexing are accepted by TRT 10.x (no hard abort).",
+    "FP16 is unusable: 730 fp16-overflowing constants incl. literal inf in every vision self_attn layer; cosine collapses to 0.805 (wrong signs).",
+    "trtexec --layerPrecisions name-pinning does NOT work here: myelin fusion erases semantic names (Softmax/Norm -> __myl_* supernodes) and the wildcard is default-only, not substring.",
+    "BF16 is the fix: same exponent range as FP32 so no overflow; cosine 0.9974.",
+    "Latencies are Blackwell/opt-0 only; Orin Nano will be slower. Hitting 10 Hz likely needs fewer denoise steps too, independent of precision."
+  ]
+}
