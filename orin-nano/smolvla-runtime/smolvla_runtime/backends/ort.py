@@ -68,8 +68,19 @@ def build_providers(
 
     precision selects the TRT reduced-precision mode (fp16 default, bf16 experiment).
     Engine + timing caches live under cache_dir so the (slow) first build is paid once.
+
+    Build-peak overrides (env, for fitting the first build into 8 GB unified memory):
+      TRT_WORKSPACE_MB   cap per-tactic GPU scratch (default 1024).
+      TRT_OPT_LEVEL      TensorRT builder optimization level 0-5 (default 3). Lower
+                         explores far fewer tactics -> smaller build peak + faster
+                         build, at a modest runtime-latency cost. Only the *build* is
+                         affected; a cached engine reloads identically either way.
+    These shrink the one-time engine build; they do not change a cached engine.
     """
     os.makedirs(cache_dir, exist_ok=True)
+    ws_mb = os.environ.get("TRT_WORKSPACE_MB")
+    if ws_mb:
+        trt_workspace = int(ws_mb) * 1024 * 1024
     trt_opts = {
         "device_id": 0,
         # fp16 is the Orin deploy path; bf16 is gated/experimental (see module docstring).
@@ -87,17 +98,26 @@ def build_providers(
         # Avoid carving the graph into many tiny TRT islands.
         "trt_min_subgraph_size": 5,
     }
+    opt_level = os.environ.get("TRT_OPT_LEVEL")
+    if opt_level:
+        trt_opts["trt_builder_optimization_level"] = int(opt_level)
     cuda_opts = {
         "device_id": 0,
         "gpu_mem_limit": cuda_mem_limit,
         "arena_extend_strategy": "kNextPowerOfTwo",
         "do_copy_in_default_stream": True,
     }
-    return [
-        ("TensorrtExecutionProvider", trt_opts),
-        ("CUDAExecutionProvider", cuda_opts),
-        "CPUExecutionProvider",
-    ]
+    providers: list = [("TensorrtExecutionProvider", trt_opts)]
+    # TRT_DROP_CUDA_EP=1 omits the CUDA EP. Its CUDA context + cuDNN/cuBLAS
+    # workspaces reserve several hundred MB of *non-swappable* memory at session
+    # creation — memory the TRT engine *build* doesn't need but which can tip an
+    # 8 GB board into OOM during the build. Use only to build/cache the engine;
+    # a cached engine then loads cheaply with the full stack re-enabled. With the
+    # whole graph on TRT, CPU EP is enough to catch any stray op.
+    if not os.environ.get("TRT_DROP_CUDA_EP"):
+        providers.append(("CUDAExecutionProvider", cuda_opts))
+    providers.append("CPUExecutionProvider")
+    return providers
 
 
 class ORTBackend:
