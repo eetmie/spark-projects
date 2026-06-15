@@ -73,6 +73,32 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (na * nb))
 
 
+def parity_gate(
+    worst_cos: float,
+    worst_max_abs: float,
+    any_nonfinite: bool,
+    *,
+    cos_threshold: float,
+    max_abs_threshold: float,
+) -> tuple[bool, list[str]]:
+    """Two-sided PASS/FAIL gate on the action output: cosine AND max-abs.
+
+    Cosine alone can stay ~1.0 while a few elements drift far (a high-norm action
+    dimension hides a small-angle error), so we also bound the worst absolute
+    difference. Default max_abs_threshold=1e-2 is <1% of the [-1, 1] action range
+    — imperceptible on the robot — and matches an independent FP16 VLA measurement
+    (SmolVLA at max_abs 7.8e-3 / cos 0.999994). Returns (passed, reasons).
+    """
+    reasons: list[str] = []
+    if worst_cos < cos_threshold:
+        reasons.append(f"worst action cosine {worst_cos:.6f} < {cos_threshold}")
+    if worst_max_abs > max_abs_threshold:
+        reasons.append(f"worst action max_abs {worst_max_abs:.3e} > {max_abs_threshold:.0e}")
+    if any_nonfinite:
+        reasons.append("non-finite candidate output (nan/inf)")
+    return (not reasons), reasons
+
+
 def _compare(ref: np.ndarray, cand: np.ndarray) -> dict:
     ref = np.asarray(ref, dtype=np.float32)
     cand = np.asarray(cand, dtype=np.float32)
@@ -180,6 +206,9 @@ def main() -> int:
     ap.add_argument("--image", default=None, help="Optional image file; default seeded synthetic.")
     ap.add_argument("--cos-threshold", type=float, default=0.997,
                     help="Min cosine similarity on the action chunk to PASS.")
+    ap.add_argument("--max-abs-threshold", type=float, default=1e-2,
+                    help="Max allowed worst absolute diff on the action chunk to PASS "
+                         "(<1%% of the [-1,1] action range). Tighten to ~5e-3 for tuned FP16.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
@@ -232,6 +261,7 @@ def main() -> int:
         LOG.info("Candidate graph differs from reference: %s", candidate_onnx)
     print(f"\n================  {title}  ================")
     worst_primary_cos = 1.0
+    worst_primary_max_abs = 0.0
     any_nonfinite = False
     for s in range(args.num_samples):
         print(f"\n-- sample {s}  (infer {latencies[s]:.1f} ms) " + ("-" * 32))
@@ -244,6 +274,7 @@ def main() -> int:
                   f"max_rel={m['max_rel']:.3e}{flag}")
             if name == primary:
                 worst_primary_cos = min(worst_primary_cos, m["cosine"])
+                worst_primary_max_abs = max(worst_primary_max_abs, m["max_abs"])
             any_nonfinite = any_nonfinite or not m["finite"]
 
     # head-to-head preview of the first action vector, last sample
@@ -256,12 +287,17 @@ def main() -> int:
         print(f"\n  candidate infer: avg {np.mean(latencies):.1f} ms  "
               f"p95 {np.percentile(latencies, 95):.1f} ms")
 
-    passed = (worst_primary_cos >= args.cos_threshold) and not any_nonfinite
+    passed, reasons = parity_gate(
+        worst_primary_cos, worst_primary_max_abs, any_nonfinite,
+        cos_threshold=args.cos_threshold, max_abs_threshold=args.max_abs_threshold,
+    )
     print("\n" + "=" * 69)
-    print(f"  worst action cosine = {worst_primary_cos:.6f}  "
-          f"(threshold {args.cos_threshold})   non-finite: {any_nonfinite}")
+    print(f"  worst action cosine  = {worst_primary_cos:.6f}  (threshold {args.cos_threshold})")
+    print(f"  worst action max_abs = {worst_primary_max_abs:.3e}  (threshold {args.max_abs_threshold:.0e})"
+          f"   non-finite: {any_nonfinite}")
     print(f"  RESULT: {'PASS ✅' if passed else 'FAIL ❌'}")
     if not passed:
+        print(f"  -> FAIL: {'; '.join(reasons)}")
         print(f"  -> {args.precision} reduced precision diverged (likely softmax/layernorm overflow).")
         print("     trt_layer_norm_fp32_fallback is on by default; if it still fails, keep more")
         print("     sensitive ops in FP32 in the export, or fall those subgraphs back to the CUDA EP.")
