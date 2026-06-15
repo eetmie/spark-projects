@@ -49,6 +49,10 @@ class CameraConfig:
     height: int = 480
     fps: int = 30
     lock_auto_exposure: bool = False
+    # Keep auto-exposure adaptive but forbid it from stretching exposure past the
+    # frame budget. Without this the D435i silently halves the color frame rate in
+    # dim light (the "30fps that's really 15fps" trap on the RSUSB/no-depth path).
+    pin_frame_rate: bool = True
 
 
 class RealSenseRGB:
@@ -73,12 +77,27 @@ class RealSenseRGB:
 
     def start(self) -> None:
         profile = self._pipeline.start(self._config)
+        if self._cfg.pin_frame_rate:
+            self._try_pin_frame_rate(profile)
         if self._cfg.lock_auto_exposure:
             self._try_lock_auto_exposure(profile)
         self._thread = threading.Thread(target=self._run, name="d435i-rgb", daemon=True)
         self._thread.start()
         LOG.info("D435i RGB stream started: %dx%d @ %d Hz",
                  self._cfg.width, self._cfg.height, self._cfg.fps)
+
+    def _try_pin_frame_rate(self, profile) -> None:
+        # auto_exposure_priority = 0 -> constant frame rate; AE adjusts gain/exposure
+        # within the 1/fps budget instead of lengthening exposure (which drops fps).
+        try:
+            for sensor in profile.get_device().query_sensors():
+                if sensor.supports(self._rs.option.auto_exposure_priority):
+                    sensor.set_option(self._rs.option.auto_exposure_priority, 0)
+                    LOG.info("D435i auto-exposure priority off (frame rate pinned to %d Hz)",
+                             self._cfg.fps)
+                    return
+        except Exception as exc:
+            LOG.warning("Could not pin frame rate (auto_exposure_priority): %s", exc)
 
     def _try_lock_auto_exposure(self, profile) -> None:
         try:
