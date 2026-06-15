@@ -17,9 +17,18 @@ Orin (compute 8.7) has no fast BF16, and Orin TensorRT dislikes bfloat16 inputs
 around Conv/MatMul. The graph stays FP32 here; the TRT-EP lowers what's safe to FP16
 and keeps layernorm/sensitive ops in FP32.
 
+**--fp16-weights (needed for the Orin Nano 8 GB):** the FP32 graph is ~1.5 GB, and on
+8 GB unified memory the FP32 weights resident during the TRT *build* OOM the GPU
+allocator — the build can't complete on-device. Pass `--fp16-weights` to ALSO emit a
+mixed-precision FP16 ONNX (~0.8 GB; weights FP16, LayerNorm/Softmax + IO kept FP32)
+that builds within 8 GB. The deployed engine is FP16 either way; this just lets the
+build happen. The FP32 file is kept as the parity gold — deploy the FP16 one. (On a
+bigger Jetson the FP32 graph + on-device TRT-EP FP16 lowering is still fine.)
+
 If on-Orin FP16 parity ever fails (non-finite / cosine drop from the vision tower's
 `inf` attention-mask constants), re-export with --fp16-safe-masks to clamp those
-sentinels to a finite value. Leave it OFF until proven necessary.
+sentinels to a finite value (--fp16-weights already clamps them). For a cosine drop,
+widen the FP32-kept ops with --fp16-block-ops. Leave both OFF until proven necessary.
 """
 
 from __future__ import annotations
@@ -32,20 +41,18 @@ from pathlib import Path
 import torch
 
 
-def clamp_inf_constants_for_fp16(onnx_path: str, finite: float = 1.0e4) -> int:
-    """Replace inf / sentinel-huge constants in the ONNX with a FP16-safe finite.
+def _clamp_inf_constants_in_model(model, finite: float = 1.0e4) -> int:
+    """Replace inf / sentinel-huge constants in a loaded ONNX model, in place.
 
     The SmolVLM vision self-attn bakes additive attention-mask sentinels of
-    `torch.finfo(dtype).min` (~-3.4e38) / `-inf`. In FP32/BF16 that's fine; under the
-    Orin's FP16 TensorRT-EP they overflow (clip to +/-65504) and softmax/layernorm can
-    diverge. We only touch clearly-sentinel magnitudes (|x| >= 1e30 or non-finite) so
-    real weights are never altered. Returns the number of tensors changed.
+    `torch.finfo(dtype).min` (~-3.4e38) / `-inf`. In FP32/BF16 that's fine; under
+    FP16 they overflow (clip to +/-65504) and softmax/layernorm can diverge. We only
+    touch clearly-sentinel magnitudes (|x| >= 1e30 or non-finite) so real weights are
+    never altered. Returns the number of tensors changed. Idempotent: re-running on an
+    already-clamped model is a no-op (|1e4| < 1e30 threshold).
     """
     import numpy as np
-    import onnx
     from onnx import numpy_helper
-
-    model = onnx.load(onnx_path)  # loads external data alongside if present
 
     def fix(tensor) -> bool:
         arr = numpy_helper.to_array(tensor)
@@ -69,6 +76,15 @@ def clamp_inf_constants_for_fp16(onnx_path: str, finite: float = 1.0e4) -> int:
             for attr in node.attribute:
                 if attr.name == "value":
                     changed += int(fix(attr.t))
+    return changed
+
+
+def clamp_inf_constants_for_fp16(onnx_path: str, finite: float = 1.0e4) -> int:
+    """(FP32-deploy path) Clamp inf/sentinel constants in `onnx_path`, in place."""
+    import onnx
+
+    model = onnx.load(onnx_path)  # loads external data alongside if present
+    changed = _clamp_inf_constants_in_model(model, finite)
     if changed:
         # Save with external data: this graph is ~1.5 GB and would blow protobuf's
         # 2 GB single-file limit if serialized inline. Produces <name>.onnx + .data.
@@ -78,6 +94,49 @@ def clamp_inf_constants_for_fp16(onnx_path: str, finite: float = 1.0e4) -> int:
             location=Path(onnx_path).name + ".data", size_threshold=1024,
         )
     return changed
+
+
+# Numerically-sensitive ops kept in FP32 during the FP16 weight conversion. The 25
+# LayerNormalization (vision tower) + 187 Softmax (attention) are the ops a blanket
+# FP16 cast overflowed before (vision tower, cos 0.805 — see orin-nano findings);
+# keeping them FP32 mirrors the on-Orin trt_layer_norm_fp32_fallback.
+_FP16_SENSITIVE_OPS = ["LayerNormalization", "Softmax"]
+
+
+def export_fp16_weights(
+    src_path: str, dst_path: str, finite: float = 1.0e4,
+    extra_block_ops: list[str] | None = None,
+) -> None:
+    """Write a mixed-precision FP16 copy of the FP32 ONNX (FP32 graph left untouched).
+
+    Why: a 1.5 GB FP32 graph can't be TRT-built within the Orin Nano's 8 GB — the
+    FP32 weights resident in host RAM during the build OOM the GPU allocator. An FP16
+    graph is ~half the size, so the build fits. The *deployed* engine is FP16 either
+    way (the Orin's TRT-EP lowers FP32->FP16 at build time); this just moves that
+    halving upstream so the build can happen at all.
+
+    Mixed precision: weights -> FP16, but `_FP16_SENSITIVE_OPS` (+ any --fp16-block-ops)
+    stay FP32, and graph inputs/outputs stay their original dtypes (`keep_io_types`)
+    so the runtime's preprocess/postprocess are unchanged. The inf-mask sentinels are
+    clamped first (FP16 would otherwise NaN). Output is a single file (~0.8 GB < 2 GB).
+    Requires `onnxconverter-common` (pip install onnxconverter-common).
+    """
+    import onnx
+    from onnxconverter_common import float16
+
+    model = onnx.load(src_path)
+    n = _clamp_inf_constants_in_model(model, finite)  # FP16 safety; idempotent
+    block = list(float16.DEFAULT_OP_BLOCK_LIST) + _FP16_SENSITIVE_OPS
+    if extra_block_ops:
+        block += list(extra_block_ops)
+    fp16_model = float16.convert_float_to_float16(
+        model,
+        keep_io_types=True,      # image/state/noise in + actions out stay FP32
+        op_block_list=block,
+    )
+    onnx.save(fp16_model, dst_path)
+    print(f"--fp16-weights: clamped {n} sentinel const(s), kept {len(set(block))} op "
+          f"types in FP32; wrote mixed-FP16 ONNX -> {dst_path}")
 
 
 def patch_smolvla_for_legacy_onnx_export() -> None:
@@ -197,6 +256,16 @@ def main() -> None:
                         help="Clamp inf/sentinel attention-mask constants to a finite value so the "
                              "Orin's FP16 TensorRT-EP path stays numerically safe. Leave OFF unless "
                              "on-Orin FP16 parity.py fails (non-finite / cosine drop).")
+    parser.add_argument("--fp16-weights", action="store_true",
+                        help="ALSO emit a mixed-precision FP16 ONNX next to the FP32 graph (weights "
+                             "-> FP16; LayerNorm/Softmax + IO kept FP32). ~half the size, so the Orin "
+                             "Nano can build the TRT engine within 8 GB (the FP32 graph OOMs the "
+                             "build). The FP32 file is kept untouched as the parity gold. Requires "
+                             "onnxconverter-common.")
+    parser.add_argument("--fp16-block-ops", default="",
+                        help="Comma-separated extra ONNX op types to keep in FP32 during "
+                             "--fp16-weights (LayerNormalization,Softmax are already blocked). Use if "
+                             "parity.py flags a divergence, e.g. add the decomposed-RMSNorm chain.")
     args = parser.parse_args()
 
     patch_smolvla_for_legacy_onnx_export()
@@ -304,6 +373,18 @@ def main() -> None:
     onnx.checker.check_model(model)
     print(f"ONNX checker OK: {output} ({output.stat().st_size / 1e6:.1f} MB)")
 
+    # --- optional: mixed-precision FP16 graph for the Orin's 8 GB TRT build ---------
+    fp16_out = None
+    if args.fp16_weights:
+        fp16_name = (output.name.replace("fp32", "fp16")
+                     if "fp32" in output.name else output.stem + "_fp16.onnx")
+        fp16_out = output.with_name(fp16_name)
+        extra = [s.strip() for s in args.fp16_block_ops.split(",") if s.strip()]
+        export_fp16_weights(str(output), str(fp16_out), extra_block_ops=extra)
+        onnx.checker.check_model(onnx.load(str(fp16_out), load_external_data=False))
+        print(f"FP16 ONNX checker OK: {fp16_out} ({fp16_out.stat().st_size / 1e6:.1f} MB)  "
+              f"<- deploy THIS to the Orin (--onnx-path); keep the FP32 as parity gold")
+
     # --- deploy bundle: tokenizer + normalization stats next to the ONNX ----------
     # The Orin loads the tokenizer with --model-id <dir>/tokenizer (vocab-exact, no
     # network, no backbone guessing). The normalization stats are needed later when the
@@ -335,11 +416,14 @@ def main() -> None:
 
     import onnxruntime as ort
 
-    print("Creating CPU ORT session ...")
-    sess = ort.InferenceSession(str(output), providers=["CPUExecutionProvider"])
-    print("ORT providers:", sess.get_providers())
-    print("Inputs:", [(i.name, i.shape, i.type) for i in sess.get_inputs()])
-    print("Outputs:", [(o.name, o.shape, o.type) for o in sess.get_outputs()])
+    for label, path in (("FP32", output), ("FP16", fp16_out)):
+        if path is None:
+            continue
+        print(f"Creating CPU ORT session ({label}) ...")
+        sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        print("  providers:", sess.get_providers())
+        print("  inputs:", [(i.name, i.shape, i.type) for i in sess.get_inputs()])
+        print("  outputs:", [(o.name, o.shape, o.type) for o in sess.get_outputs()])
 
 
 if __name__ == "__main__":
