@@ -97,8 +97,13 @@ class InputBuilder:
         return raw[np.newaxis]  # [1, S]
 
     def build(self, image_rgb: np.ndarray, instruction: str, state: np.ndarray | None) -> dict:
+        # SmolVLA's LeRobot pipeline (SmolVLANewLineProcessor) requires the task to
+        # end with a newline before tokenizing — match it so on-robot tokens line up
+        # with training (an empty instruction becomes "\n", as LeRobot does too).
+        text = instruction or ""
+        text = text if text.endswith("\n") else text + "\n"
         enc = self._tokenizer(
-            instruction or "",
+            text,
             max_length=self.lang_max_len,
             padding="max_length",
             truncation=True,

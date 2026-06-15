@@ -315,8 +315,12 @@ def main() -> None:
     image_h, image_w = policy.config.resize_imgs_with_padding
 
     tokenizer = policy.model.vlm_with_expert.processor.tokenizer
+    # SmolVLA's LeRobot pipeline (SmolVLANewLineProcessor) appends a trailing
+    # newline to the task before tokenizing; replicate it so the exported graph's
+    # tokens match training. Skipping it is a silent train/serve token mismatch.
+    task = args.task if args.task.endswith("\n") else args.task + "\n"
     enc = tokenizer(
-        args.task,
+        task,
         return_tensors="pt",
         padding="max_length",
         max_length=policy.config.tokenizer_max_length,

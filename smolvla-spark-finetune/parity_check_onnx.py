@@ -59,8 +59,11 @@ def main() -> None:
     image_h, image_w = policy.config.resize_imgs_with_padding
 
     tokenizer = policy.model.vlm_with_expert.processor.tokenizer
+    # Match LeRobot's SmolVLANewLineProcessor: task must end with a newline before
+    # tokenizing (keeps this reference consistent with training + the export).
+    task = args.task if args.task.endswith("\n") else args.task + "\n"
     enc = tokenizer(
-        args.task,
+        task,
         return_tensors="pt",
         padding="max_length",
         max_length=policy.config.tokenizer_max_length,
