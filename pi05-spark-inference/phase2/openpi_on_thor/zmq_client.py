@@ -17,16 +17,27 @@ import time
 import numpy as np
 import zmq
 from openpi_client import msgpack_numpy
+from openpi_on_thor.wire import encode_obs
 
 
 class ZmqPolicyClient:
     """Synchronous REQ client. One ``infer`` call == one round trip."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 5555, timeout_ms: int = 60000):
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 5555,
+        timeout_ms: int = 60000,
+        *,
+        jpeg_quality: int | None = 85,
+    ):
         self._ctx = zmq.Context.instance()
         self._addr = f"tcp://{host}:{port}"
         self._timeout_ms = timeout_ms
         self._packer = msgpack_numpy.Packer()
+        # JPEG-compress whitelisted camera frames on the wire. Set to None for a
+        # bit-exact (lossless) payload, e.g. when comparing against a reference.
+        self._jpeg_quality = jpeg_quality
         self._connect()
 
     def _connect(self):
@@ -36,7 +47,9 @@ class ZmqPolicyClient:
         self._sock.connect(self._addr)
 
     def _roundtrip(self, payload):
-        self._sock.send(self._packer.pack(payload))
+        # encode_obs JPEG-compresses whitelisted camera frames; control messages
+        # and non-image fields pass through msgpack-numpy unchanged.
+        self._sock.send(encode_obs(payload, self._packer, jpeg_quality=self._jpeg_quality))
         try:
             return msgpack_numpy.unpackb(self._sock.recv())
         except zmq.Again:

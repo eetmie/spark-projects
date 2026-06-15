@@ -17,6 +17,16 @@ locally at its control rate, so inference latency hides between chunks. One
 LIBERO obs = 2×(224×224×3) images + an 8-vector ≈ 300 KB raw → ~24 Mbit/s at
 10 Hz, trivial on gigabit LAN (~2–3 ms transfer, hidden inside the ~95 ms infer).
 
+**JPEG-on-wire (default on).** The client JPEG-compresses the two camera frames
+before sending (`wire.encode_obs`, quality 85), cutting that ~300 KB to ~20–40 KB
+— a non-issue on gigabit, but it matters on Wi-Fi / congested links and leaves
+headroom if you raise camera resolution. Compression is keyed to a whitelist
+(`observation/image`, `observation/wrist_image`) so only real frames are touched
+— JPEG is lossy, so a state vector that happened to be uint8 HxWx3 is never
+compressed. Decode is tag-driven, so the server still accepts raw clients. For a
+**lossless** payload (e.g. a reference comparison) construct the client with
+`ZmqPolicyClient(..., jpeg_quality=None)`.
+
 ## Run it
 
 Server (on the GB10 box). TensorRT backend (~95 ms); drop `--engine-path` for
@@ -32,10 +42,17 @@ $DR python phase2/openpi_on_thor/zmq_serve.py \
     --config-name pi05_libero \
     --checkpoint-dir /workspace/checkpoints/pi05_libero_pytorch \
     --engine-path /workspace/checkpoints/pi05_libero_pytorch/onnx/model_fp8_nvfp4.engine \
+    --host 0.0.0.0 --allow-lan \
     --port 5555
 ```
 
 > Note the added `-p 5555:5555` to publish the port out of the container.
+>
+> The server now **binds to `127.0.0.1` by default** (local-only). To serve a
+> robot over the LAN you must pass `--host 0.0.0.0 --allow-lan` — the explicit
+> `--allow-lan` is a deliberate acknowledgment that the endpoint is
+> unauthenticated (see *Scope / limits*). Without it, a non-loopback bind is
+> refused.
 
 Client (robot box, or same box for a smoke test):
 
@@ -75,7 +92,9 @@ while running:
 - **One client, strict lockstep** (REQ/REP alternates send→recv). Perfect for a
   single robot. For multiple robots or async pipelining, switch the server to
   `zmq.ROUTER` and the client to `zmq.DEALER` (envelope frames, no lockstep).
-- No auth/encryption — intended for a trusted LAN. Use a CurveZMQ keypair or an
-  SSH tunnel if it must cross an untrusted network.
+- No auth/encryption — intended for a trusted LAN. A non-loopback bind is
+  refused unless you pass `--allow-lan` (which logs a loud warning), so you can't
+  expose it by accident. Use a CurveZMQ keypair or an SSH tunnel if it must cross
+  an untrusted network.
 - Client `infer()` has a 60 s receive timeout; on timeout it rebuilds the socket
   and raises `TimeoutError` so your loop can retry.

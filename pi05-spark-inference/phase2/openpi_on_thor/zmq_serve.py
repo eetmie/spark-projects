@@ -20,6 +20,7 @@ import traceback
 
 import zmq
 from openpi_client import msgpack_numpy
+from openpi_on_thor.wire import assert_bind_allowed, decode_obs
 from openpi.policies import policy_config
 from openpi.training import config as _config
 
@@ -63,7 +64,12 @@ def main():
     ap.add_argument("--checkpoint-dir", default="/workspace/checkpoints/pi05_libero_pytorch")
     ap.add_argument("--engine-path", default=None,
                     help="TensorRT engine path; omit to serve PyTorch BF16")
-    ap.add_argument("--host", default="0.0.0.0")
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="Bind address. Default is local-only; bind 0.0.0.0 (with --allow-lan) "
+                         "to serve a robot over the LAN.")
+    ap.add_argument("--allow-lan", action="store_true",
+                    help="Acknowledge an unauthenticated LAN-reachable bind (non-loopback host). "
+                         "Required for 0.0.0.0; trusted/isolated networks only.")
     ap.add_argument("--port", type=int, default=5555)
     ap.add_argument("--warmup", type=int, default=3,
                     help="synthetic warmup infers before accepting requests")
@@ -94,6 +100,7 @@ def main():
             policy.infer(ex)
             logger.info("  warmup %d/%d  %.1f ms", i + 1, args.warmup, (time.monotonic() - t) * 1000)
 
+    assert_bind_allowed(args.host, allow_lan=args.allow_lan)
     ctx = zmq.Context.instance()
     sock = ctx.socket(zmq.REP)
     sock.bind(f"tcp://{args.host}:{args.port}")
@@ -106,7 +113,7 @@ def main():
         raw = sock.recv()  # REP must reply exactly once per recv()
         start = time.monotonic()
         try:
-            msg = msgpack_numpy.unpackb(raw)
+            msg = decode_obs(raw)  # tag-aware: restores JPEG frames, raw passes through
 
             # Control messages: {"__cmd__": "metadata" | "ping"}
             if isinstance(msg, dict) and "__cmd__" in msg:
