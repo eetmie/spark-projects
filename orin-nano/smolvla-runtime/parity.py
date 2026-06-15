@@ -9,10 +9,15 @@ being kept in FP32 and the export / provider options need a look.
 
 How it works
 ------------
-* Reference  = the FP32 ONNX run through ONNX Runtime on the **CPU** EP. CPU gives
-  *true* FP32; the CUDA EP would use TF32 and wouldn't be a clean gold.
-* Candidate  = the SAME ONNX run through ONNX Runtime with the **TensorRT EP**
-  (fp16 by default; bf16 with --precision bf16), i.e. the actual deployment path.
+* Reference  = the FP32 ONNX (--onnx) run through ONNX Runtime on the **CPU** EP. CPU
+  gives *true* FP32; the CUDA EP would use TF32 and wouldn't be a clean gold.
+* Candidate  = an ONNX run through ONNX Runtime with the **TensorRT EP** (fp16 by
+  default; bf16 with --precision bf16), i.e. the actual deployment path. By default
+  this is the same --onnx; pass --candidate-onnx to point it at a *different* graph —
+  e.g. the mixed-precision **FP16-weights** deploy file, which on the 8 GB Orin Nano is
+  what actually gets built (the FP32 graph OOMs the build). That setup compares the
+  real FP16 deploy artifact against the true FP32 gold, so the reported loss folds in
+  BOTH the fp16 weight rounding and the TRT-EP lowering.
 * Identical, seeded inputs go to both (same image, tokens, state, and the same
   noise draw per sample -- flow-matching is noise-sensitive, so this must match).
 * Reference and candidate run **sequentially**, and the reference session is
@@ -32,6 +37,10 @@ Examples
 --------
     # Standard FP16 check (3 seeded samples, CPU FP32 reference):
     python parity.py --onnx exports/smolvla.onnx
+
+    # FP16-weights deploy file vs the FP32 gold (the 8 GB Orin Nano case):
+    python parity.py --onnx exports/smolvla_base_fp32_static.onnx \
+        --candidate-onnx exports/smolvla_base_fp16_static.onnx
 
     # BF16 experiment, more samples, a real image:
     python parity.py --onnx exports/smolvla.onnx --precision bf16 \
@@ -156,7 +165,11 @@ def make_image(rng, size, image_path):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--onnx", required=True, help="FP32 ONNX (with .onnx.data sidecar if split).")
+    ap.add_argument("--onnx", required=True,
+                    help="FP32 gold ONNX (CPU reference; with .onnx.data sidecar if split).")
+    ap.add_argument("--candidate-onnx", default=None,
+                    help="ONNX for the TRT-EP candidate; defaults to --onnx. Set to the FP16-weights "
+                         "deploy ONNX to parity-check the real Orin Nano artifact against the FP32 gold.")
     ap.add_argument("--precision", choices=("fp16", "bf16"), default="fp16",
                     help="Candidate TRT-EP precision. fp16 = deploy default; bf16 = experiment.")
     ap.add_argument("--engine-cache-dir", default="/tmp/smolvla_trt_cache")
@@ -200,17 +213,23 @@ def main() -> int:
     LOG.info("Prepared %d sample(s); action chunk = (%d, %d).",
              args.num_samples, io0.chunk_size, io0.action_dim)
 
-    # Reference first (then freed), candidate second.
+    # Reference first (then freed), candidate second. The candidate may be a separate
+    # ONNX (e.g. the FP16-weights deploy file); its I/O names/dtypes/dims match the FP32
+    # gold's (keep_io_types preserves them), so the once-built feeds apply to both.
+    candidate_onnx = args.candidate_onnx or args.onnx
     ref_io, ref_outs = run_reference(args.onnx, feeds_per_sample)
     cand_io, cand_outs, latencies = run_candidate(
-        args.onnx, feeds_per_sample, args.precision, args.engine_cache_dir)
+        candidate_onnx, feeds_per_sample, args.precision, args.engine_cache_dir)
 
     primary = cand_io.primary_output
     common = [n for n in cand_outs[0] if n in ref_outs[0]]
     LOG.info("Comparing outputs %s (primary action output: %s)", common, primary)
 
     # --- report ---
-    title = f"PARITY: ORT/TRT-EP {args.precision}  vs  FP32 ONNX (CPU)"
+    cand_label = ("FP16-weights ONNX" if args.candidate_onnx else "FP32 ONNX")
+    title = f"PARITY: ORT/TRT-EP {args.precision} [{cand_label}]  vs  FP32 ONNX (CPU)"
+    if args.candidate_onnx:
+        LOG.info("Candidate graph differs from reference: %s", candidate_onnx)
     print(f"\n================  {title}  ================")
     worst_primary_cos = 1.0
     any_nonfinite = False

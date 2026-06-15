@@ -8,25 +8,42 @@ The whole dir is gitignored (it's regenerable from `export_valid_onnx.py`). Spar
 
 `export_valid_onnx.py` writes a self-contained **deploy bundle** into `exports/`, not just the ONNX:
 
-- `smolvla_base_fp32_static.onnx` (~1.5 GB, not tracked) — FP32 SmolVLA export, **num_steps=10**,
-  static graph (the boolean-mask `NonZero` was rewritten to `torch.where`, so no device→host sync
-  stall / data-dependent-shape fragility on the Orin). Bit-identical in output to the original
-  `*_valid.onnx` export. On the Orin (JetPack 7.2) it runs through **ONNX Runtime's TensorRT EP at
-  FP16** — ORT partitions the graph, builds + caches a TRT engine per subgraph, keeps layernorm /
-  sensitive ops FP32, and falls back to the CUDA EP for the rest. No `trtexec`, no pure `.engine`.
-  (FP16 not BF16: Orin is compute 8.7 — `platform_has_fast_bf16 = n/a`. The old "build in BF16, FP16
-  is broken" guidance was a *blanket-FP16* `trtexec` engine on Blackwell; the partitioned TRT-EP path
-  keeps the overflowing vision-tower ops in FP32, so FP16 is the right Orin dtype.)
+- `smolvla_base_fp16_static.onnx` (~0.8 GB, not tracked) — **DEPLOY THIS to the Orin Nano.**
+  Mixed-precision FP16 copy of the FP32 graph (weights → FP16; LayerNormalization + Softmax + graph
+  IO kept FP32; the `inf` attention-mask sentinels clamped to ±1e4 first so FP16 can't NaN). Why a
+  pre-cast FP16 file at all: the 1.5 GB FP32 graph **can't be TRT-built within the Orin Nano's 8 GB**
+  unified memory — the resident FP32 weights during the build OOM the GPU allocator. Halving the graph
+  upstream lets the on-device build complete. The *deployed* engine is FP16 either way (the Orin's
+  TRT-EP lowers FP32→FP16 at build time); this just moves the halving before the build. Spark-local
+  FP16-vs-FP32 parity: **cosine 0.9999972**, max-abs-diff 0.0087, all-finite. Produced by
+  `onnxruntime.transformers.float16` (not `onnxconverter-common`, whose 1.16.0 release crashes on this
+  graph), then topologically re-sorted so `onnx.checker` passes.
+- `smolvla_base_fp32_static.onnx` (~1.5 GB, not tracked) — **parity gold, NOT for the Orin Nano build**
+  (it OOMs the 8 GB build; see above). FP32 SmolVLA export, **num_steps=10**, static graph (the
+  boolean-mask `NonZero` was rewritten to `torch.where`, so no device→host sync stall /
+  data-dependent-shape fragility on the Orin). Bit-identical in output to the original `*_valid.onnx`
+  export, and the source the FP16 file is converted from. On a *bigger* Jetson (not the 8 GB Nano) this
+  FP32 graph runs directly through **ONNX Runtime's TensorRT EP at FP16** — ORT partitions the graph,
+  builds + caches a TRT engine per subgraph, keeps layernorm / sensitive ops FP32, falls back to the
+  CUDA EP for the rest. No `trtexec`, no pure `.engine`. (FP16 not BF16: Orin is compute 8.7 —
+  `platform_has_fast_bf16 = n/a`. The old "build in BF16, FP16 is broken" guidance was a *blanket-FP16*
+  `trtexec` engine on Blackwell; the partitioned TRT-EP path keeps the overflowing vision-tower ops in
+  FP32, so FP16 is the right Orin dtype.)
 - `tokenizer/` — vocab-exact tokenizer saved from the checkpoint processor. Point the Orin runtime at
   it with `--model-id exports/tokenizer` (self-contained, no network, no backbone guessing).
 - `*preprocessor*` / `*postprocessor*` — normalization stats, needed to normalize `state` in and
   un-normalize padded actions out before driving a real robot (the graph is `sample_actions` only).
-- `smolvla_base_fp32_static.onnx.sha256` — verify after transfer: `sha256sum -c <file>.sha256`.
+- `*.onnx.sha256` (one per ONNX) — verify after transfer: `sha256sum -c <file>.sha256`.
 
 To regenerate, or to make a fewer-steps variant for more reactive runs (run from this dir):
 
-    python export_valid_onnx.py --output exports/smolvla_base_fp32_static.onnx       # num_steps=10
-    python export_valid_onnx.py --output exports/smolvla_base_fp32_static_s5.onnx --num-steps 5
+    # FP32 gold + FP16 deploy file in one pass (--fp16-weights writes the FP16 sibling)
+    python export_valid_onnx.py --output exports/smolvla_base_fp32_static.onnx --fp16-weights   # num_steps=10
+    python export_valid_onnx.py --output exports/smolvla_base_fp32_static_s5.onnx --num-steps 5 --fp16-weights
+
+The FP16 sibling is named by swapping `fp32`→`fp16` in the output filename. If you already have the
+FP32 gold and only need to (re)build the FP16 file, call `export_fp16_weights(src, dst)` from
+`export_valid_onnx` directly — it converts from the existing FP32 ONNX and leaves it byte-identical.
 
 ## Spark-local receipt (NOT copied to the Orin — kept beside this README, one level up)
 

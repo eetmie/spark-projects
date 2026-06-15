@@ -119,10 +119,17 @@ def export_fp16_weights(
     stay FP32, and graph inputs/outputs stay their original dtypes (`keep_io_types`)
     so the runtime's preprocess/postprocess are unchanged. The inf-mask sentinels are
     clamped first (FP16 would otherwise NaN). Output is a single file (~0.8 GB < 2 GB).
-    Requires `onnxconverter-common` (pip install onnxconverter-common).
+
+    Converter: we use ONNX Runtime's `onnxruntime.transformers.float16` rather than
+    `onnxconverter-common`. The latter (1.16.0, the newest release) crashes on this
+    graph in `remove_unnecessary_cast_node` — with `keep_io_types`, a boundary Cast
+    feeding multiple consumers makes `cast_node_downstream_dict[...]` a list, and the
+    cleanup pass does `list.input` on it (AttributeError). ORT ships a maintained fork
+    of the same converter, API-compatible (keep_io_types / op_block_list) with a
+    broader default block list, that drops the broken pass. Ships with onnxruntime.
     """
     import onnx
-    from onnxconverter_common import float16
+    from onnxruntime.transformers import float16
 
     model = onnx.load(src_path)
     n = _clamp_inf_constants_in_model(model, finite)  # FP16 safety; idempotent
@@ -134,6 +141,12 @@ def export_fp16_weights(
         keep_io_types=True,      # image/state/noise in + actions out stay FP32
         op_block_list=block,
     )
+    # keep_io_types inserts graph_input_cast_* nodes but doesn't re-sort the graph;
+    # ORT runs it fine but onnx.checker demands topological order, so sort before save.
+    from onnxruntime.transformers.onnx_model import OnnxModel
+    om = OnnxModel(fp16_model)
+    om.topological_sort()
+    fp16_model = om.model
     onnx.save(fp16_model, dst_path)
     print(f"--fp16-weights: clamped {n} sentinel const(s), kept {len(set(block))} op "
           f"types in FP32; wrote mixed-FP16 ONNX -> {dst_path}")
@@ -260,8 +273,8 @@ def main() -> None:
                         help="ALSO emit a mixed-precision FP16 ONNX next to the FP32 graph (weights "
                              "-> FP16; LayerNorm/Softmax + IO kept FP32). ~half the size, so the Orin "
                              "Nano can build the TRT engine within 8 GB (the FP32 graph OOMs the "
-                             "build). The FP32 file is kept untouched as the parity gold. Requires "
-                             "onnxconverter-common.")
+                             "build). The FP32 file is kept untouched as the parity gold. Uses the "
+                             "onnxruntime.transformers float16 converter (ships with onnxruntime).")
     parser.add_argument("--fp16-block-ops", default="",
                         help="Comma-separated extra ONNX op types to keep in FP32 during "
                              "--fp16-weights (LayerNormalization,Softmax are already blocked). Use if "
