@@ -71,7 +71,6 @@ nvidia-nvshmem-cu13==3.4.5
 nvidia-nvtx==13.0.85
 onnx==1.21.0
 onnx-ir==0.2.1
-onnxconverter-common==1.16.0
 onnxruntime==1.26.0
 onnxscript==0.7.0
 opencv-python-headless==4.13.0.92

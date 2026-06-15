@@ -46,7 +46,6 @@ pyarrow==24.0.0
 onnx==1.21.0
 onnxruntime==1.26.0
 onnxscript==0.7.0
-onnxconverter-common==1.16.0
 numpy==2.4.4
 ml_dtypes==0.5.4
 protobuf==6.33.6
