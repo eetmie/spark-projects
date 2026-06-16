@@ -65,6 +65,20 @@ expert_prefill 16.5 ms, expert_decode 11.4 ms (text 0.1 ms is a dummy seq-len-1 
 Projected full loop = (vision + text + prefill) once + decode ×N: ~52 ms fixed + ~12 ms/step →
 **~170 ms @ 10 steps (~6 Hz), ~110 ms @ 5 steps (~9 Hz)** — full num_steps quality, loop in Python.
 (Per-engine dummy-input numbers; real end-to-end measured once the loop is wired.)
+
+**"Is TRT even necessary?" — CUDA-EP baseline (no TRT, no build).** Ran the *monolith*
+(`smolvla_base_fp16_static.onnx`, 108k nodes, 10 steps) on ORT **CUDA-EP only** via
+`build_probe.py --no-trt` — no engine build, so the 8 GB build wall never applies; this is the
+unoptimized-GPU number (a fair PyTorch proxy, arguably faster than eager). End-to-end over 10 runs:
+**mean 532 ms, p50 498 ms, p95 510 ms, min 495 ms (~2 Hz)**, finite output `(1,50,32)`, fit in 6 GB.
+Caveats: session creation ~2 min (108k-node graph optimization), 819 Memcpy + thousands of ScatterND
+nodes (the unrolled graph is pathological for CUDA-EP too), and `num_steps` locked at 10.
+**Verdict:** TRT is NOT strictly *required* — the monolith runs on CUDA-EP at ~2 Hz, so for chunked
+open-loop control (50-action chunks) that alone may suffice. But the split+TRT path is **~3× faster
+(~170 ms / ~6 Hz vs ~500 ms / ~2 Hz)**, plus lower power, flexible `num_steps`, and instant startup.
+So: split is an **optimization, not a necessity** — pick it for Hz/power headroom; CUDA-EP monolith
+is the zero-extra-work fallback if 2 Hz is enough.
+
 Confirms the diagnosis: the wall was building all 450M weights at once, not node count or precision.
 Per-component, each weight slice builds in ~a minute. Deploy path = re-export OUR fine-tuned weights in
 this split layout + Python denoise loop (prefill ×1 → decode ×N) in `backends/ort.py`.

@@ -49,15 +49,25 @@ def main() -> int:
     ap.add_argument("--precision", default="fp16")
     ap.add_argument("--runs", type=int, default=0,
                     help="After the build, time N steady-state inferences (engine loaded from cache).")
+    ap.add_argument("--no-trt", action="store_true",
+                    help="Run on CUDA EP only (no TensorRT, no engine build) — the 'is TRT even "
+                         "necessary' baseline. Latency here is unoptimized-GPU, a fair PyTorch proxy.")
     args = ap.parse_args()
 
     import onnxruntime as ort
 
     p = Path(args.onnx)
     Path(args.cache_dir).mkdir(parents=True, exist_ok=True)
-    print(f"== build probe: {p.name} ({p.stat().st_size/1e6:.0f} MB), precision={args.precision}")
+    print(f"== build probe: {p.name} ({p.stat().st_size/1e6:.0f} MB), precision={args.precision}, "
+          f"{'CUDA-EP only (no TRT)' if args.no_trt else 'TensorRT-EP'}")
 
-    sess = ort.InferenceSession(str(p), providers=build_providers(args.cache_dir, precision=args.precision))
+    if args.no_trt:
+        providers = [("CUDAExecutionProvider",
+                      {"device_id": 0, "arena_extend_strategy": "kNextPowerOfTwo"}),
+                     "CPUExecutionProvider"]
+    else:
+        providers = build_providers(args.cache_dir, precision=args.precision)
+    sess = ort.InferenceSession(str(p), providers=providers)
     print("registered providers:", sess.get_providers())
 
     feeds = {}
@@ -94,6 +104,13 @@ def main() -> int:
         p95 = lat[max(0, int(len(lat) * 0.95) - 1)]
         print(f"\ninference latency over {args.runs} runs (ms): "
               f"mean={mean:.2f}  p50={p50:.2f}  p95={p95:.2f}  min={lat[0]:.2f}")
+
+    if args.no_trt:
+        active = sess.get_providers()
+        on_gpu = "CUDAExecutionProvider" in active
+        print(f"\nVERDICT (no-TRT baseline): ran on {active} — "
+              f"{'GPU (CUDA-EP) ✅' if on_gpu else 'CPU ⚠️'}")
+        return 0 if on_gpu else 2
 
     engines = list(Path(args.cache_dir).glob("*.engine"))
     built = len(engines) > 0
