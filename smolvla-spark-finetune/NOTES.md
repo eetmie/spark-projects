@@ -11,6 +11,32 @@ The important boundary is:
 
 The Orin Nano builds + caches its TensorRT engine from a valid ONNX via ONNX Runtime's TensorRT EP — the first build is slow and memory-sensitive (needs the swap + MAXN_SUPER from `orin-nano/system/`). It is not the right place to export PyTorch/LeRobot checkpoints to ONNX.
 
+## NEXT BIG TASK: split-graph export (2026-06-17)
+
+The on-Orin work proved the **monolithic** ONNX (`export_valid_onnx.py`, the unrolled `sample_actions`
+loop) **cannot TRT-build on the Orin Nano's 8 GB** — TRT imports all 450M weights as FP32 working
+copies at once (~6 GB floor, node-count-independent). FP16 weights and `--num-steps 5` do NOT fix it
+(both still OOM). Settled fix = **export per-component split graphs**; each carries only its weight
+slice → builds in ≤60 s, runs in ms (validated on-device with `ainekko/smolvla_base_onnx`).
+Full matrix + validation: `orin-nano/smolvla-runtime/notes/findings.md`.
+
+**What to build here on GB10** — mirror `ainekko/smolvla_base_onnx` (9 graphs) and the inference loop
+in `github.com/aifoundry-org/ETARS` (`notebooks/smolVLA_export.ipynb`, `src/lerobot/policies/smolvla/
+smolvlm_with_expert_onnx.py`, `modeling_smolvla_ort.py`):
+
+- `smolvlm_vision` (image → features, ×1), `smolvlm_text` (tokens → features, ×1)
+- `smolvlm_expert_prefill` (vision+text+state → conditioning + **KV cache out**, ×1)
+- `smolvlm_expert_decode` (x_t, t, **KV in** → v_t, ONE flow-matching step, run **×N** in Python)
+- `state_projector`, `time_in/out_projector`, `action_in/out_projector`
+
+Keep the current `export_valid_onnx.py` monolith only as the **FP32 parity gold** (run parity on a big
+box, not the Orin). Export FP32; the Orin's TRT-EP lowers to FP16 per engine (each builds fine, weights
+are split). Ship the 9 graphs + `tokenizer/` + normalization stats as the deploy bundle. On the Orin,
+the prefill→decode loop gets wired into `orin-nano/smolvla-runtime/backends/ort.py`.
+
+Projected end-to-end on Orin: (vision 33 ms + text + prefill 16.5 ms) once + decode 11.4 ms ×N →
+~5–6 Hz at 10 steps, ~9 Hz at 5 steps, full num_steps quality.
+
 ## Current Environment
 
 - Python: 3.12.3 in `.venv`

@@ -20,9 +20,11 @@ HID-sensor modules. (Depth + onboard IMU + an RT control loop are deferred; they
 kernel work before.)
 
 ### [`smolvla-runtime/`](smolvla-runtime/) — SmolVLA model pipeline (ORT + TensorRT EP)
-`RealSense RGB → SmolVLA (ONNX Runtime + TensorRT EP) → action chunk`. Runs the SmolVLA ONNX
-exported on the Spark ([`../smolvla-spark-finetune/`](../smolvla-spark-finetune/)) through ORT's
-TensorRT execution provider (FP16, engine-cached). No robot control yet — model pipeline only.
+`RealSense RGB → SmolVLA (ONNX Runtime + TensorRT EP) → action chunk`. Runs the SmolVLA export from
+the Spark ([`../smolvla-spark-finetune/`](../smolvla-spark-finetune/)) through ORT's TensorRT EP
+(FP16, engine-cached). No robot control yet — model pipeline only. **Note:** the *monolithic* ONNX
+won't TRT-build on 8 GB (all 450M weights at once); the deploy path is **per-component split engines**
+(vision/text/prefill/decode + Python denoise loop) — validated on-device, see `smolvla-runtime/notes/findings.md`.
 
 ## The boundary
 
