@@ -26,8 +26,10 @@ requirements.txt for the Jetson AI Lab index / source-build note).
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -183,3 +185,183 @@ class ORTBackend:
         if actions.ndim == 3 and actions.shape[0] == 1:
             actions = actions[0]
         return PredictResult(actions=actions, latency_ms=latency_ms, backend="ort")
+
+
+# --- split-engine backend (the 8 GB Orin deploy path) ------------------------
+# The monolithic graph can't TRT-build on the 8 GB board (node-count-independent
+# ~6 GB weight floor). The Spark exports 9 per-component graphs instead
+# (export_split_onnx.py); each carries only its weight slice so each builds a clean
+# FP16 engine in <=60 s. The flow-matching denoise loop runs here in Python:
+# prefill the VLM KV cache once, then decode x_t += dt*v_t for num_steps. This loop
+# is verified bit-for-bit against the monolith on the Spark (parity_split_onnx.py:
+# cosine 1.0000000, max_abs 2.1e-6).
+_SPLIT_GRAPHS = {
+    "vision": "smolvlm_vision.onnx",
+    "text": "smolvlm_text.onnx",
+    "state": "state_projector.onnx",
+    "action_in": "action_in_projector.onnx",
+    "action_out": "action_out_projector.onnx",
+    "time_in": "time_in_projector.onnx",
+    "time_out": "time_out_projector.onnx",
+    "prefill": "smolvlm_expert_prefill.onnx",
+    "decode": "smolvlm_expert_decode.onnx",
+}
+
+
+def _silu(x: np.ndarray) -> np.ndarray:
+    return x * (1.0 / (1.0 + np.exp(-x)))
+
+
+def _make_att_2d_masks(pad_masks: np.ndarray, att_masks: np.ndarray) -> np.ndarray:
+    cumsum = np.cumsum(att_masks, axis=1)
+    att = cumsum[:, None, :] <= cumsum[:, :, None]
+    pad = pad_masks[:, None, :] & pad_masks[:, :, None]
+    return att & pad
+
+
+def _sinusoidal_time_emb(time_v: np.ndarray, dim: int, min_period: float, max_period: float) -> np.ndarray:
+    frac = np.linspace(0.0, 1.0, dim // 2, dtype=np.float64)
+    period = min_period * (max_period / min_period) ** frac
+    scale = 1.0 / period * 2 * math.pi
+    x = scale[None, :] * time_v[:, None]
+    return np.concatenate([np.sin(x), np.cos(x)], axis=1)
+
+
+class SplitORTBackend:
+    """SmolVLA over the 9 split graphs + a Python flow-matching loop.
+
+    Same `predict(image_rgb, instruction, state)` contract as ORTBackend, so it
+    drops into the pipeline unchanged. Each graph gets its own TRT engine cache
+    subdir, so the per-component engines build + cache independently (the whole
+    point — none of them hits the monolith's 8 GB build wall).
+    """
+
+    def __init__(
+        self,
+        split_dir: str,
+        model_id: str,
+        engine_cache_dir: str = "/tmp/smolvla_trt_cache_split",
+        precision: str = "fp16",
+        num_steps: int = 10,
+        min_period: float = 0.004,
+        max_period: float = 4.0,
+        fixed_noise: bool = False,
+        providers=None,
+    ):
+        import onnxruntime as ort
+
+        if precision not in ("fp16", "bf16"):
+            raise ValueError(f"precision must be 'fp16' or 'bf16', got {precision!r}")
+        self.num_steps = int(num_steps)
+        self.min_period = float(min_period)
+        self.max_period = float(max_period)
+
+        d = Path(split_dir)
+        self._sess: dict[str, object] = {}
+        self._inames: dict[str, list[str]] = {}
+        for key, fname in _SPLIT_GRAPHS.items():
+            path = d / fname
+            if not path.exists():
+                raise SystemExit(f"split graph missing: {path}")
+            provs = providers or build_providers(
+                os.path.join(engine_cache_dir, key), precision=precision)
+            LOG.info("Loading split graph %-10s %s", key, fname)
+            s = ort.InferenceSession(str(path), providers=provs)
+            self._sess[key] = s
+            self._inames[key] = [i.name for i in s.get_inputs()]
+        active = self._sess["prefill"].get_providers()
+        if active[0] != "TensorrtExecutionProvider":
+            LOG.warning("Split graphs not on TensorRT EP (active=%s) — slower fallback.", active)
+
+        # Derive dims straight off the graph I/O (auto-config to whatever the Spark baked).
+        def _shape(key, idx=0, out=False):
+            t = (self._sess[key].get_outputs() if out else self._sess[key].get_inputs())[idx]
+            return [int(x) if isinstance(x, int) else -1 for x in t.shape]
+
+        image_size = _shape("vision")[2]
+        n_img = _shape("vision", out=True)[1]
+        # prefill input order is [attention_mask, position_ids, vlm_embeds]
+        prefix_len = _shape("prefill", 2)[1]
+        lang_max_len = prefix_len - n_img - 1               # 113 - 64 - 1 = 48
+        chunk_size, action_dim = _shape("action_in")[1], _shape("action_in")[2]
+        self._exp_dim = _shape("action_in", out=True)[2]    # 720
+        state_dim = _shape("state")[1]
+        self._n_layers = (len(self._inames["decode"]) - 3) // 2   # (N inputs - mask,pos,emb)/2
+
+        self._builder = InputBuilder(
+            model_id=model_id, image_size=image_size, lang_max_len=lang_max_len,
+            state_dim=state_dim, chunk_size=chunk_size, action_dim=action_dim,
+            fixed_noise=fixed_noise,
+        )
+        self.description = (
+            f"ort-split precision={precision} providers={active[0]} steps={self.num_steps} "
+            f"graphs={split_dir.rstrip('/').split('/')[-1]} prefix={prefix_len} layers={self._n_layers}"
+        )
+        LOG.info("Split dims: image=%d n_img=%d lang=%d state=%d chunk=%d action=%d exp=%d steps=%d",
+                 image_size, n_img, lang_max_len, state_dim, chunk_size, action_dim,
+                 self._exp_dim, self.num_steps)
+
+    def _run(self, key: str, *args):
+        return self._sess[key].run(None, dict(zip(self._inames[key], args)))
+
+    def _embed_prefix(self, image, lang_tokens, lang_masks, state):
+        img_emb = self._run("vision", image)[0]
+        img_emb = img_emb * img_emb.shape[-1] ** 0.5
+        lang_emb = self._run("text", lang_tokens)[0]
+        lang_emb = lang_emb * math.sqrt(lang_emb.shape[-1])
+        state_emb = self._run("state", state)[0]
+        state_emb = state_emb[:, None, :] if state_emb.ndim == 2 else state_emb
+        embs = np.concatenate([img_emb, lang_emb, state_emb], axis=1).astype(np.float32)
+        pad = np.concatenate([
+            np.ones((1, img_emb.shape[1]), dtype=bool), lang_masks,
+            np.ones((1, state_emb.shape[1]), dtype=bool)], axis=1)
+        att = np.array([0] * img_emb.shape[1] + [0] * lang_emb.shape[1]
+                       + [1] * state_emb.shape[1], dtype=bool)[None, :]
+        return embs, pad, att
+
+    def _embed_suffix(self, x_t, t):
+        action_emb = self._run("action_in", x_t.astype(np.float32))[0]
+        time_emb = _sinusoidal_time_emb(np.broadcast_to(t, 1), self._exp_dim,
+                                        self.min_period, self.max_period)
+        time_emb = np.broadcast_to(time_emb[:, None, :], action_emb.shape).copy()
+        at = np.concatenate([action_emb, time_emb], axis=2).astype(np.float32)
+        at = self._run("time_in", at)[0]
+        at = _silu(at)
+        at = self._run("time_out", at.astype(np.float32))[0]
+        pad = np.ones((1, at.shape[1]), dtype=bool)
+        att = np.ones(at.shape[1], dtype=bool)[None, :]
+        return at.astype(np.float32), pad, att
+
+    def _sample_actions(self, logical: dict) -> np.ndarray:
+        image, lang_tokens = logical["image"], logical["lang_tokens"]
+        lang_masks, state, noise = logical["lang_masks"], logical["state"], logical["noise"]
+        pe, pp, pa = self._embed_prefix(image, lang_tokens, lang_masks, state)
+        pmask2d = _make_att_2d_masks(pp, pa)
+        ppos = (np.cumsum(pp, axis=1) - 1).astype(np.int64)
+        kv = self._run("prefill", pmask2d, ppos, pe)          # 2*n_layers KV tensors
+
+        dt = np.array(-1.0 / self.num_steps, dtype=np.float32)
+        x_t = noise.astype(np.float32).copy()
+        t = np.array(1.0, dtype=np.float32)
+        chunk = x_t.shape[1]
+        while t >= -dt / 2:
+            se, sp, sa = self._embed_suffix(x_t, t)
+            slen, plen = sp.shape[1], pp.shape[1]
+            pref2d = np.broadcast_to(pp[:, None, :], (1, slen, plen)).copy()
+            full = np.concatenate([pref2d, _make_att_2d_masks(sp, sa)], axis=2)
+            pos = (np.sum(pp, axis=-1)[:, None] + np.cumsum(sp, axis=1) - 1).astype(np.int64)
+            out = self._run("decode", full, pos, se, *kv)[0]
+            v_t = self._run("action_out", out[:, -chunk:].astype(np.float32))[0]
+            x_t = x_t + dt * v_t
+            t = t + dt
+        return x_t
+
+    def predict(self, image_rgb, instruction, state) -> PredictResult:
+        logical = self._builder.build(image_rgb, instruction, state)
+        t0 = time.perf_counter()
+        actions = self._sample_actions(logical)
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+        actions = np.asarray(actions, dtype=np.float32)
+        if actions.ndim == 3 and actions.shape[0] == 1:
+            actions = actions[0]
+        return PredictResult(actions=actions, latency_ms=latency_ms, backend="ort-split")

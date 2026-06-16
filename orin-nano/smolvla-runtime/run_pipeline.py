@@ -9,7 +9,11 @@ shape, a preview, and latency. Mapping actions onto a real robot's command space
 (normalization, limits, safety) is intentionally out of scope here.
 
 Backends:
-  ort   ONNX Runtime + TensorRT EP (the deployment path)  --onnx-path model.onnx
+  ort-split  the 8 GB Orin deploy path: 9 per-component TRT engines + a Python
+             flow-matching loop  --split-dir exports-split/ [--num-steps 10]
+             (the monolith can't TRT-build on 8 GB; each split graph can)
+  ort        single monolithic ONNX via TensorRT EP  --onnx-path model.onnx
+             (does NOT build on the 8 GB Nano — kept for big-board / parity use)
         --precision fp16 (default, accelerated on Orin) | bf16 (experimental)
   mock  zero actions, no model     (camera + loop plumbing check)
 
@@ -65,6 +69,14 @@ def build_backend(args):
         return ORTBackend(args.onnx_path, model_id=args.model_id,
                           engine_cache_dir=args.engine_cache_dir,
                           precision=args.precision, fixed_noise=args.fixed_noise)
+    if args.backend == "ort-split":
+        if not args.split_dir:
+            raise SystemExit("--split-dir is required for --backend ort-split.")
+        from smolvla_runtime.backends.ort import SplitORTBackend
+        return SplitORTBackend(args.split_dir, model_id=args.model_id,
+                               engine_cache_dir=args.engine_cache_dir,
+                               precision=args.precision, num_steps=args.num_steps,
+                               fixed_noise=args.fixed_noise)
     raise SystemExit(f"unknown backend {args.backend}")
 
 
@@ -86,9 +98,14 @@ def summarize_actions(actions, n=8):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--backend", choices=("mock", "ort"), default="mock")
+    ap.add_argument("--backend", choices=("mock", "ort", "ort-split"), default="mock")
     ap.add_argument("--source", choices=("realsense", "synthetic"), default="realsense")
     ap.add_argument("--onnx-path", help="FP32 ONNX (--backend ort).")
+    ap.add_argument("--split-dir", help="Dir of the 9 split graphs (--backend ort-split). "
+                    "This is the 8 GB Orin deploy path; the denoise loop runs in Python.")
+    ap.add_argument("--num-steps", type=int, default=10,
+                    help="Flow-matching denoise steps for --backend ort-split (loop in Python, "
+                         "so this is a runtime knob — fewer = faster, lower quality).")
     ap.add_argument("--precision", choices=("fp16", "bf16"), default="fp16",
                     help="TRT-EP reduced precision. fp16 = Orin deploy default; "
                          "bf16 = experimental (not hardware-accelerated on compute 8.7).")
