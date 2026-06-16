@@ -2,6 +2,94 @@
 
 Running log. Newest first. (Merges the earlier `smolvla-spark-finetune/jetson/notes`.)
 
+## First-build OOM is a NODE-COUNT wall, not weight dtype (2026-06-16)
+
+Tried to build the TRT engine on-device from the **full 10-step** export
+(`smolvla_base_fp{32,16}_static.onnx`, **108,695 nodes**). It does **not** build on the 8 GB
+Orin Nano — FP16 or FP32, GUI or headless, default or aggressive TRT knobs. Matrix (synthetic
+`run_pipeline`, cold engine cache each run):
+
+| graph        | precision | desktop  | TRT build knobs              | result                          |
+|--------------|-----------|----------|------------------------------|---------------------------------|
+| 10-step 108k | FP32      | GUI up   | defaults                     | hard OOM (NvMap err 12) ~15 min |
+| 10-step 108k | FP32      | GUI up   | opt1, ws256                  | hard OOM ~25 min                |
+| 10-step 108k | FP32      | GUI up   | opt1, ws256, no-CUDA-EP      | hard OOM ~16 min                |
+| 10-step 108k | FP16      | GUI up   | defaults                     | thrash, no engine in ~50 min    |
+| 10-step 108k | FP16      | headless | defaults                     | hard OOM (NvMap err 12) ~44 min |
+| 10-step 108k | FP16      | headless | opt1, ws256, no-CUDA-EP      | build FAILED (Err 10) ~85 min → CPU fallback |
+
+The last run is the most informative: after ~85 min of tactic-skips it hit
+`IBuilder::buildSerializedNetwork: Error Code 10: Could not find any implementation for node`
+— TRT couldn't find *any* tactic small enough for the ~60 MB free, so the engine build **failed
+outright** (not merely slow). ORT then fell back to **CPU-only** and ran the whole model there,
+emitting a **finite, plausible** action chunk: `action[0]=[+0.014,-0.115,-0.076,-0.005,+0.096,
+-0.470,...]`, shape `(50,32)`. No engine was cached. **Silver lining: that finite CPU-fallback
+output validates the `--fp16-weights` conversion is numerically sound end-to-end** (LayerNorm/
+Softmax-in-FP32 block list held; no NaN/inf) — the only missing piece is a *buildable* engine.
+
+**Diagnosis: build-memory peak scales with graph NODE COUNT, not weight dtype.** TRT's per-node
+tactic exploration over 108k nodes drives host RSS to ~7.4 GB *regardless of FP16/FP32* — the
+803 MB FP16 file hit the same 7.4 GB peak as the 1.58 GB FP32. Physical RAM fills, so GPU NvMap
+allocations (non-swappable) fail → hard OOM, or TRT exhausts all tactics and the build errors out
+(Err 10). So `--fp16-weights` does **not** help the *build* — it only halves the deployed/loaded
+footprint. (It's still the right deploy artifact; just not what unblocks the build.)
+
+- **Headless barely mattered here:** stopping `gdm3` freed only ~110 MB (idle GNOME is light); the
+  Jetson AI Lab "~800 MB" assumes a fuller desktop. Set `default.target=multi-user.target` anyway.
+- **Build-peak env knobs** (`backends/ort.py`: `TRT_OPT_LEVEL`, `TRT_WORKSPACE_MB`,
+  `TRT_DROP_CUDA_EP`) turn the *hard* OOM into a *survivable thrash*, but don't make a 108k-node
+  build finish in reasonable time.
+
+**CORRECTION (later same day): reduced num_steps does NOT fix it — weights are the floor.**
+Built the 5-step export (`smolvla_base_fp16_static_s5.onnx`, **61,370 nodes**, 43% fewer than 108k)
+headless, both with defaults and with the ws256/no-CUDA knobs. Both thrashed/OOM'd the same way,
+peaking **~6.7 GB** — only ~0.7 GB below the 10-step's 7.4 GB despite far fewer nodes. So the build
+peak is **dominated by a node-count-INDEPENDENT floor (~6 GB): TRT imports the weights as FP32
+working copies (~1.6 GB) + CUDA/ORT runtime (~1–2 GB) + scratch.** That's also why FP16 and FP32
+peaked identically (TRT builds in FP32 regardless of the file's dtype). `num_steps` only trims the
+thin node-scaling layer on top — not enough to fit. (Note: the NvMap `error 12` lines are NOT fatal;
+TRT logs them and keeps skipping tactics — the build survives but crawls, and at best limp-completes
+via CPU fallback, which is not a deployable engine.)
+
+**VALIDATED on-device (2026-06-17): the split builds.** Ran `ainekko/smolvla_base_onnx` (9 base-weight
+split graphs) through `tools/build_probe.py` (TRT-EP build of a single ONNX with dummy static inputs).
+The three heavy transformer graphs each built + cached a clean FP16 TRT engine in ≤60 s, no thrash, no
+swap spike, no OOM — where the monolith OOM'd for 85+ min:
+  - `smolvlm_expert_prefill` (644 MB) → 320 MB engine, ~60 s
+  - `smolvlm_vision` (393 MB) → ~60 s
+  - `smolvlm_expert_decode` (399 MB) → ~43 s
+  - `smolvlm_text` (189 MB) + 5 projectors + state → run on the EP stack in 1–3 s (text falls to CUDA-EP,
+    fine for a once-per-inference encoder). 3 real TRT engines, 690 MB cached total.
+Inference also validated (`build_probe.py --runs 30`, FP16 TRT, finite outputs): vision 33.1 ms,
+expert_prefill 16.5 ms, expert_decode 11.4 ms (text 0.1 ms is a dummy seq-len-1 input, not real).
+Projected full loop = (vision + text + prefill) once + decode ×N: ~52 ms fixed + ~12 ms/step →
+**~170 ms @ 10 steps (~6 Hz), ~110 ms @ 5 steps (~9 Hz)** — full num_steps quality, loop in Python.
+(Per-engine dummy-input numbers; real end-to-end measured once the loop is wired.)
+
+**"Is TRT even necessary?" — CUDA-EP baseline (no TRT, no build).** Ran the *monolith*
+(`smolvla_base_fp16_static.onnx`, 108k nodes, 10 steps) on ORT **CUDA-EP only** via
+`build_probe.py --no-trt` — no engine build, so the 8 GB build wall never applies; this is the
+unoptimized-GPU number (a fair PyTorch proxy, arguably faster than eager). End-to-end over 10 runs:
+**mean 532 ms, p50 498 ms, p95 510 ms, min 495 ms (~2 Hz)**, finite output `(1,50,32)`, fit in 6 GB.
+Caveats: session creation ~2 min (108k-node graph optimization), 819 Memcpy + thousands of ScatterND
+nodes (the unrolled graph is pathological for CUDA-EP too), and `num_steps` locked at 10.
+**Verdict:** TRT is NOT strictly *required* — the monolith runs on CUDA-EP at ~2 Hz, so for chunked
+open-loop control (50-action chunks) that alone may suffice. But the split+TRT path is **~3× faster
+(~170 ms / ~6 Hz vs ~500 ms / ~2 Hz)**, plus lower power, flexible `num_steps`, and instant startup.
+So: split is an **optimization, not a necessity** — pick it for Hz/power headroom; CUDA-EP monolith
+is the zero-extra-work fallback if 2 Hz is enough.
+
+Confirms the diagnosis: the wall was building all 450M weights at once, not node count or precision.
+Per-component, each weight slice builds in ~a minute. Deploy path = re-export OUR fine-tuned weights in
+this split layout + Python denoise loop (prefill ×1 → decode ×N) in `backends/ort.py`.
+
+**Real fix = SPLIT the model into per-component engines (not fewer steps).** Each split graph carries
+only its slice of the 450M weights (vision / text / expert-prefill / expert-decode / projectors), so
+each builds with a few hundred MB of weights → ~2–3 GB peak each → fits easily on 8 GB. The denoise
+loop runs in Python (prefill ×1, decode ×N). Reference: HF `ainekko/smolvla_base_onnx` (9 graphs) +
+github.com/aifoundry-org/ETARS. See [[smolvla-orin-split-engine-deploy]] in memory. Replicate the
+split for our fine-tuned weights in `export_valid_onnx.py`; the full/s5 monolith is a dead end on 8 GB.
+
 ## JetPack 7.2 migration — FP16 deploy, single ORT/TRT-EP backend (2026-06-13)
 
 Board reflashed to **JetPack 7.2**: L4T R39.2.0, Ubuntu 24.04, Python 3.12.3, CUDA 13.2, TensorRT

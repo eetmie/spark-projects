@@ -14,6 +14,24 @@ Upstream is [`../../smolvla-spark-finetune/`](../../smolvla-spark-finetune/) —
 export happen on the **DGX Spark**. This box only ever sees the ONNX; ORT's TensorRT EP builds and
 caches a TensorRT engine from it locally.
 
+## Deploy path: SPLIT engines (the monolith does NOT build on 8 GB)
+
+The single-graph SmolVLA export (`sample_actions`, denoise loop unrolled) **cannot TRT-build on this
+8 GB board** — not at FP16, not at `--num-steps 5`, not headless. The build OOMs because TRT imports
+all 450M weights as FP32 working copies at once (~6 GB floor, node-count-independent — `num_steps`
+barely moves it). See [`notes/findings.md`](notes/findings.md) for the full matrix.
+
+**The fix is to split the model into per-component engines** and run the denoise loop in Python:
+vision + text + expert-**prefill** (KV cache) run **once**, then expert-**decode** runs **×N** steps
+(`x_t += dt·v_t`). Each engine carries only its weight slice, so each builds in ≤60 s and runs in ms.
+Validated on-device against the reference base-weight split (HF `ainekko/smolvla_base_onnx`, loop in
+`github.com/aifoundry-org/ETARS`) with [`tools/build_probe.py`](tools/build_probe.py): 3 heavy engines
+built (690 MB), inference vision 33 ms / prefill 16.5 ms / decode 11.4 ms → **~5–9 Hz end-to-end**.
+
+**To deploy our fine-tuned policy:** re-export OUR weights in this split layout on the Spark (see
+`../../smolvla-spark-finetune/`), then wire the prefill→decode loop into `backends/ort.py`. The
+monolithic path below still documents the ORT/TRT-EP mechanics each split engine uses.
+
 ## Why ORT + TensorRT EP (one backend)
 
 ONNX Runtime's TensorRT execution provider partitions the graph, builds a TensorRT engine per
