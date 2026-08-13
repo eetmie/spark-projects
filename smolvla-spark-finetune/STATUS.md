@@ -25,14 +25,43 @@ Experimental but locally verified on NVIDIA GB10.
   + projectors), denoise loop run in Python. Validated on-device with the reference base-weight split
   (`ainekko/smolvla_base_onnx`): each heavy engine builds in ≤60 s and runs in ms → ~5–9 Hz end-to-end.
 
+## Verified 2026-08-12 (excavator fine-tune — see excavator/ and Desktop notes)
+
+- Full fine-tune on a real dataset (`masi_kaivuri_juusto`, 31 eps): 4-run sweep completed,
+  best held-out checkpoint run A step 6000 (disp_err 0.1349 vs 0.3901 zero-action baseline).
+- **Split export of OUR fine-tuned weights**: `export_split_onnx.py --model-id <checkpoint>`
+  → `exports-split-excavA6000/`. Split-vs-monolith parity on identical seeded inputs:
+  cosine 1.0000000, max_abs 4.05e-6 → **PASS, Orin-ready**.
+- Deploy bundle shipped to the Orin (`orin-nano/.../exports/excav_A6000_split/`): 9 graphs +
+  tokenizer + stats.json (verified identical to the checkpoint's normalizer) +
+  `export_info.json` with `fps` (read by kaivuriprokkis' run_inference fps guard) + PARITY.txt.
+- Synthetic split-TRT inference on the Orin with base weights: engines build ≤60 s each,
+  206–227 ms per inference.
+
+
+## Verified 2026-08-13 (long sweep, A20k deploy, first successful live run)
+
+- 30k-step sweep scored across all checkpoints: best = run A step 20000, disp_err 0.1320
+  (vs 0.1413 at 8k); all four configs still tied within 2%; no real overfit by 30k.
+- `exports-split-excavA20k` byte-verified against the A@020000 checkpoint (state_projector
+  allclose vs safetensors) and deployed to the Orin as `excav_A20k_split` (+stats.json +
+  export_info.json). Synthetic TRT proof: 209-217 ms/inference.
+- Live valve pipeline instrumented on-device (probe monkeypatches update_named/reset):
+  100 Hz writes sustained during real inference (worst 0.5 s window 86 Hz vs 50 Hz gate),
+  no watchdog starvation. Machine standing still traced to the POLICY going quiet at the
+  parked pose (bucket fully curled): 2x2 obs-swap showed dataset-state -> motion-scale
+  actions even on the live image. Fix: start from the episode-start pose.
+- **First successful live VLA run on the real excavator (2026-08-13).**
+- Run E launched: state-blind ablation (observation.state zeroed in a dataset variant +
+  stats patched to mean 0/std 1), otherwise identical to run A. Tests camera-only control.
+
 ## Not Yet Verified
 
-- Exporting a fine-tuned LoRA checkpoint after a real training run.
+- Exporting a fine-tuned LoRA checkpoint after a real training run (excavator runs are full
+  expert fine-tunes, not LoRA).
 - Merging LoRA weights into a self-contained checkpoint for deployment export.
-- **Re-exporting OUR fine-tuned weights in the SPLIT layout** (next big task — see NOTES.md).
 - On-Orin FP16-vs-FP32 parity of the split pipeline.
-- Real robot preprocessing/postprocessing loop.
-- Useful task-specific behavior from the fixture dataset.
+- Real robot preprocessing/postprocessing loop end-to-end (`--live`).
 - Real SO-101 / SO-100 hardware inference.
 
 ## Current Intended Workflow

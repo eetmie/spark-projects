@@ -41,3 +41,6 @@ third_party/
 # Misc
 *.log
 .DS_Store
+
+# Split-export bundles (regenerate with export_split_onnx.py; deploy copies live on the Orin)
+exports-split*/
