@@ -210,9 +210,6 @@ PY
         print(f"\nPLY: {ply}")
         if args.npz:
             print(f"NPZ: {out_host / 'scene_gaussians.npz'}")
-        cleaned = out_host / "cleaned.ply"
-        print("Next: clean/compress raw.ply in SuperSplat, export cleaned.ply with SH degree 3")
-        print(f"Then: python tools/usd_convert.py {cleaned} {out_host / 'scene.usdz'}")
     return result.returncode
 
 

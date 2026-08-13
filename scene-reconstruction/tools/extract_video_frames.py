@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Extract a JPEG frame set from a video for COLMAP/3DGRUT.
+"""Extract a JPEG frame set from any video for COLMAP/3DGRUT.
 
-Creates the image folder and populates it with frames for COLMAP/3DGRUT.
+Camera-agnostic: works for iPhone/Android, GoPro and other action cams, drones,
+or a plain .mp4/.mov. Populates images/ with frames and writes a
+capture_metadata.json provenance sidecar next to it — container/codec/resolution/
+fps, camera identity, and any telemetry stream (GoPro GPMD, Android/Insta360
+CAMM, Apple mebx, Sony rtmd) — plus a suggested COLMAP camera model.
 
 Usage:
     python tools/extract_video_frames.py video.MOV
@@ -29,18 +33,128 @@ def run(cmd: list[str], *, capture: bool = False) -> subprocess.CompletedProcess
     )
 
 
-def video_info(video: Path) -> tuple[float, int, int]:
+# Timed-metadata / telemetry stream identifiers (matched on codec_tag_string),
+# mapped to a human-readable description. Any camera that writes one of these is
+# handled the same way — this is what makes the pipeline camera-agnostic.
+TELEMETRY_TAGS = {
+    "gpmd": "GoPro GPMD telemetry (GPS, gyro, accelerometer)",
+    "camm": "Camera Motion Metadata (IMU; Android / Insta360 / Google)",
+    "mebx": "Apple QuickTime timed metadata (may include motion / quaternion)",
+    "rtmd": "Sony real-time metadata",
+}
+
+
+def probe(video: Path) -> dict:
+    """Return the full ffprobe format+streams JSON for a video."""
     result = run(
         ["ffprobe", "-v", "error", "-print_format", "json",
          "-show_format", "-show_streams", str(video)],
         capture=True,
     )
-    meta = json.loads(result.stdout)
-    duration = float(meta["format"]["duration"])
+    return json.loads(result.stdout)
+
+
+def video_dimensions(meta: dict) -> tuple[float, int, int]:
+    duration = float(meta["format"].get("duration", 0.0))
     for s in meta["streams"]:
         if s.get("codec_type") == "video":
             return duration, int(s["width"]), int(s["height"])
     raise RuntimeError("No video stream found")
+
+
+def video_info(video: Path) -> tuple[float, int, int]:
+    return video_dimensions(probe(video))
+
+
+def _clean_tag(value: object) -> str:
+    """Strip the control chars GoPro/QuickTime prepend to handler_name."""
+    return value.strip().strip("\x0b").strip() if isinstance(value, str) else ""
+
+
+def _fps(stream: dict) -> float | None:
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        val = stream.get(key)
+        if val and "/" in val:
+            num, den = val.split("/")
+            if float(den) != 0:
+                return round(float(num) / float(den), 3)
+    return None
+
+
+def describe_capture(video: Path, meta: dict) -> dict:
+    """Build a camera-agnostic provenance record from ffprobe metadata.
+
+    Captures container/codec/resolution/fps, camera identity, and any
+    telemetry/data streams, then suggests a COLMAP camera model. Nothing here
+    is camera-specific — GoPro, iPhone, drone and plain files are all described
+    the same way; only the detected label and suggestion differ.
+    """
+    fmt = meta.get("format", {})
+    ftags = fmt.get("tags", {})
+    streams = meta.get("streams", [])
+    vstream = next((s for s in streams if s.get("codec_type") == "video"), {})
+
+    make = ftags.get("make") or ftags.get("com.apple.quicktime.make")
+    model = ftags.get("model") or ftags.get("com.apple.quicktime.model")
+    firmware = ftags.get("firmware")
+    handlers = " ".join(_clean_tag(s.get("tags", {}).get("handler_name")) for s in streams)
+    blob = " ".join(str(x) for x in (make, model, firmware, handlers)).lower()
+
+    if "gopro" in blob or (firmware or "").startswith("HD"):
+        detected = "GoPro"
+    elif "insta360" in blob:
+        detected = "Insta360"
+    elif "dji" in blob:
+        detected = "DJI"
+    elif "apple" in blob or "iphone" in blob:
+        detected = "Apple/iPhone"
+    else:
+        detected = make or "unknown"
+
+    telemetry, data_streams = [], []
+    for s in streams:
+        if s.get("codec_type") != "data":
+            continue
+        tag = (s.get("codec_tag_string") or "").strip()
+        entry = {
+            "index": s.get("index"),
+            "codec_tag": tag,
+            "handler": _clean_tag(s.get("tags", {}).get("handler_name")),
+        }
+        label = TELEMETRY_TAGS.get(tag)
+        (telemetry if label else data_streams).append(
+            {**entry, "kind": label} if label else entry
+        )
+
+    if detected in ("GoPro", "Insta360", "DJI"):
+        suggestion = {
+            "camera_model": "OPENCV_FISHEYE", "mapper": "global",
+            "reason": f"{detected} wide-angle / action-cam footage",
+        }
+    else:
+        suggestion = {
+            "camera_model": "OPENCV", "mapper": "incremental",
+            "reason": "standard lens assumed; use OPENCV_FISHEYE for iPhone 0.5x / wide-angle",
+        }
+
+    duration, width, height = video_dimensions(meta)
+    return {
+        "source": video.name,
+        "container": fmt.get("format_name"),
+        "duration_sec": round(duration, 3),
+        "creation_time": ftags.get("creation_time"),
+        "video": {
+            "codec": vstream.get("codec_name"),
+            "width": width,
+            "height": height,
+            "fps": _fps(vstream),
+            "pix_fmt": vstream.get("pix_fmt"),
+        },
+        "camera": {"make": make, "model": model, "firmware": firmware, "detected": detected},
+        "telemetry_streams": telemetry,
+        "data_streams": data_streams,
+        "suggested_colmap": suggestion,
+    }
 
 
 def clear_frames(images_dir: Path) -> int:
@@ -207,7 +321,8 @@ def main() -> int:
         if removed:
             print(f"Removed {removed} existing frames.")
 
-    duration, width, height = video_info(video)
+    meta = probe(video)
+    duration, width, height = video_dimensions(meta)
     print(f"Source    : {video.name}  ({width}x{height}, {duration:.1f}s)")
     print(f"Workspace : {workspace}")
 
@@ -235,8 +350,25 @@ def main() -> int:
             if weak_buckets and args.min_sharpness > 0:
                 print(f"Warning   : {weak_buckets} buckets had no frame above --min-sharpness; kept their best frame")
 
+    metadata = describe_capture(video, meta)
+    metadata["extraction"] = {
+        "frames_written": len(frames),
+        "frames_requested": args.frames,
+        "select": args.select,
+        "max_width": args.max_width,
+    }
+    meta_path = workspace / "capture_metadata.json"
+    meta_path.write_text(json.dumps(metadata, indent=2))
+
     print(f"\nExtracted {len(frames)} frames to {images_dir}/")
-    print(f"\nNext: python tools/colmap.py {workspace}")
+    print(f"Metadata  : {meta_path.name}  (camera: {metadata['camera']['detected']})")
+    if metadata["telemetry_streams"]:
+        print(f"Telemetry : {', '.join(t['kind'] for t in metadata['telemetry_streams'])}")
+    sug = metadata["suggested_colmap"]
+    hint = f"--camera-model {sug['camera_model']}"
+    if sug["mapper"] != "incremental":
+        hint += f" --mapper {sug['mapper']}"
+    print(f"COLMAP    : suggested {hint}  ({sug['reason']})")
     return 0
 
 

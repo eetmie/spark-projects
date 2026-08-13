@@ -34,9 +34,29 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
+import pwd
 import subprocess
 import sys
 from pathlib import Path
+
+
+def _host_torch_cache() -> Path:
+    """Host torch cache dir that persists model weights (LPIPS/VGG16) across runs.
+
+    Resolve the invoking user's real home even under sudo, so the cache is not
+    silently redirected to root's (cold) cache — otherwise 3DGRUT re-downloads
+    the ~550 MB VGG16 perceptual weights on every training run.
+    """
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user:
+        try:
+            home = Path(pwd.getpwnam(sudo_user).pw_dir)
+        except KeyError:
+            home = Path.home()
+    else:
+        home = Path.home()
+    return home / ".cache" / "torch"
 
 
 # Config names in apps/ keyed by (dataset_type, method, mcmc).
@@ -293,6 +313,7 @@ def main() -> int:
     print(f"Method     : {args.method}{' + MCMC' if args.mcmc else ''}")
     print(f"Iterations : {iters}")
     print(f"Output     : {out_container}/{args.experiment}/")
+    print(f"Torch cache: {_host_torch_cache()}  →  /root/.cache/torch  (VGG16/LPIPS persist here)")
     if resume_container:
         print(f"Resume     : {resume_container}")
     if args.wandb is not None:
@@ -345,14 +366,15 @@ PY
 set -euo pipefail
 source /opt/conda/etc/profile.d/conda.sh && conda activate 3dgrut
 export UV_PROJECT_ENVIRONMENT=$CONDA_PREFIX
+export TORCH_HOME=/root/.cache/torch
 bash /workspace/scripts/install_slangc.sh
 cd /workspace
 {prepare_downsample}python train.py --config-name {config}.yaml \\
   {override_str}
 """
 
-    torch_cache = Path.home() / ".cache" / "torch"
-    torch_cache.mkdir(parents=True, exist_ok=True)
+    torch_cache = _host_torch_cache()
+    (torch_cache / "hub" / "checkpoints").mkdir(parents=True, exist_ok=True)
 
     cmd = [
         "docker", "run", "--rm", "--gpus", "all",

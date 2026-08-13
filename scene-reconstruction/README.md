@@ -1,6 +1,8 @@
 # Scene Reconstruction Pipeline
 
-Smartphone video -> COLMAP -> 3DGRUT Gaussian splat -> SuperSplat cleanup/compression -> Isaac Sim NuRec USDZ on DGX Spark.
+General **video → PLY / USD** pipeline: Video -> COLMAP -> 3DGRUT Gaussian splat -> SuperSplat cleanup/compression -> Isaac Sim NuRec USDZ on DGX Spark.
+
+Any video works — iPhone/Android, GoPro or other action cams, drones, or a plain `.mp4`/`.mov`. Frame extraction is codec-agnostic (ffmpeg); telemetry/data streams (GoPro GPMD, CAMM, etc.) are recorded to `capture_metadata.json` and otherwise ignored by the solve. For wide-angle footage (GoPro, iPhone 0.5x) use the `OPENCV_FISHEYE` camera model in COLMAP — the extractor prints the suggested model per clip. See step 1.
 
 ## Workspace Layout
 
@@ -8,8 +10,9 @@ The normal pipeline only creates the folders and files that are used by the next
 
 ```text
 my_scene/
-├── video.MOV        <- source video copied from iPhone
+├── video.MOV        <- source video (iPhone, GoPro, any .mp4/.mov)
 ├── images/          <- ffmpeg-extracted frames for COLMAP and 3DGRUT
+├── capture_metadata.json  <- provenance: codec/res/fps, camera, telemetry streams
 ├── database.db      <- COLMAP database
 ├── sparse/0/        <- COLMAP sparse reconstruction and camera parameters
 ├── models/          <- 3DGRUT checkpoints
@@ -28,7 +31,7 @@ cd /home/masi-pgx/spark-projects/scene-reconstruction
 
 ### 1. Extract Frames
 
-Put the iPhone video in a scene folder, then extract frames:
+Put the video in a scene folder, then extract frames (works for iPhone `.MOV`, GoPro `.MP4`, or any video):
 
 ```bash
 mkdir -p /path/to/my_scene
@@ -46,6 +49,8 @@ python tools/extract_video_frames.py /path/to/my_scene/video.MOV --clear
 ```
 
 `--select sharp` scores candidates with SIFT keypoint count plus Laplacian sharpness, then keeps the best frame from each time bucket so the final set covers the full video instead of only the sharpest few seconds.
+
+Extraction also writes `capture_metadata.json` next to `images/` — a camera-agnostic provenance record (container/codec/resolution/fps, camera identity, and any telemetry stream: GoPro GPMD, Android/Insta360 CAMM, Apple `mebx`, Sony `rtmd`). It prints a suggested COLMAP camera model based on what it detects, e.g. GoPro/action-cam footage → `OPENCV_FISHEYE --mapper global`, standard lenses → `OPENCV`. The telemetry is recorded for provenance; it is not yet fed into the SfM solve.
 
 ### 2. COLMAP GUI
 
@@ -97,6 +102,8 @@ python tools/train.py /path/to/my_scene --method 3dgut
 ```
 
 Default training uses 3DGRT, which is the preferred renderer on DGX Spark. 3DGUT is a faster rasterization fallback.
+
+Checkpoints land in `models/<experiment>/ours_<iteration>/ckpt_<iteration>.pt`. The `ours_<iteration>` folder name is upstream 3DGRUT convention, inherited from the original Inria 3D Gaussian Splatting eval layout (each viewpoint is saved as `ours_<iter>/` next to `gt/` for benchmark tables) — it is not per-scene and can be ignored. Model weights (VGG16/LPIPS) are cached under `~/.cache/torch` and mounted into the container, so they download once, not every run.
 
 ### 4. Export Raw PLY
 

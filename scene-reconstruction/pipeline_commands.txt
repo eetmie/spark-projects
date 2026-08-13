@@ -1,18 +1,22 @@
 # Scene Reconstruction Pipeline - DGX Spark
-# iPhone video -> ffmpeg frames -> COLMAP GUI -> 3DGRUT raw.ply -> SuperSplat cleaned.ply -> USDZ
+# Video -> ffmpeg frames -> COLMAP GUI -> 3DGRUT raw.ply -> SuperSplat cleaned.ply -> USDZ
+# Any video works: iPhone/Android, GoPro/action cam, or a plain .mp4/.mov.
+# Wide-angle (GoPro, iPhone 0.5x) -> use --camera-model OPENCV_FISHEYE in step 3.
 # Run from: /home/masi-pgx/spark-projects/scene-reconstruction
 
-# 1. Create a scene folder and copy the iPhone video into it.
+# 1. Create a scene folder and copy the video into it.
 mkdir -p /path/to/my_scene
 cp /path/to/video.MOV /path/to/my_scene/
 
-# 2. Extract frames with ffmpeg. This creates only images/.
+# 2. Extract frames with ffmpeg. Creates images/ and capture_metadata.json
+#    (codec/res/fps + camera + telemetry streams). It prints the suggested COLMAP
+#    camera model for the clip (e.g. GoPro -> OPENCV_FISHEYE --mapper global).
 python tools/extract_video_frames.py /path/to/my_scene/video.MOV
 
 # Optional smaller extraction for faster tests:
 # python tools/extract_video_frames.py /path/to/my_scene/video.MOV --frames 150 --max-width 1920 --clear
 
-# Optional blur-aware extraction for handheld/iPhone footage:
+# Optional blur-aware extraction for handheld footage:
 # python tools/extract_video_frames.py /path/to/my_scene/video.MOV --frames 200 --select sharp --clear
 # python tools/extract_video_frames.py /path/to/my_scene/video.MOV --frames 200 --select sharp --candidate-step 2 --clear
 # Sharp mode scores candidates with SIFT + Laplacian and keeps the best frame per time bucket.
