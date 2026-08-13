@@ -368,16 +368,31 @@ never touches swap. This is the build to deploy.
 
 ### The floor, and what it means
 
-    ~2.5 GB   fixed CUDA/TRT context   (visible as vision_0's 2.57 GB marginal cost)
-    ~3.5 GB   engine + runtime allocations, largely insensitive to ONNX dtype
-    --------
-    ~6.0 GB   practical floor for X-VLA-0.9B on this board
-
 Nothing available at the ONNX or ORT level moves this much: FP16 weights −0.34 GB, ORT
 arena off −0.16 GB, CUDA EP dropped −0.14 GB, and they do not stack meaningfully. **Use the
-FP16 build** (`exports/split_fp16`) — it is the lowest measured RSS, the fastest (denoise
-366 ms vs 411 ms), and parity-clean — but budget on ~6.1 GB resident, leaving **~1.3 GB**
-for the camera reader and control loop.
+FP16 build** (`exports/split_fp16`) — it is the lowest measured RSS, the fastest, and
+parity-clean — but budget on ~5.7 GB resident, leaving **~1.5 GB** for the camera reader
+and control loop.
+
+### Correction: the cost is X-VLA's engines, not a big fixed context
+
+An earlier reading of this attributed ~2.5 GB to a fixed CUDA/TRT context, because
+`vision_0` — simply the first session created — showed a 2.57 GB marginal cost. **Measuring
+SmolVLA on the same board disproves that**: its whole 9-engine load is 1.98 GB, so the
+fixed context cannot be 2.5 GB. X-VLA's first engine alone costs more than all of SmolVLA.
+
+Per parameter, the two are not close:
+
+| | params | sessions cost | bytes/param |
+|---|---:|---:|---:|
+| SmolVLA (excav_A20k, 9 engines) | 450 M | 1.98 GB | ~4.4 |
+| X-VLA (fp16, 12 engines) | 875 M | 6.03 GB | ~6.9 |
+
+So X-VLA is ~2x the parameters but ~3x the resident memory. The extra is most likely TRT
+per-engine device memory for activations — 12 engines rather than 9, a 262-token sequence
+at hidden 1024 through 24 blocks, and DaViT feature maps — not weights and not a context
+that both models would pay equally. That remains a hypothesis; the numbers above are the
+measurement.
 
 If more headroom is ever needed, the remaining levers are structural, not numerical: fewer
 camera views (already at 1 of 3), a smaller backbone, or running the policy in a separate

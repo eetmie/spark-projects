@@ -11,14 +11,25 @@ estimated, negative results are kept rather than dropped, and the tooling
 (`tools/build_probe.py`, `tools/memory_probe.py`, `parity.py`, `run_pipeline.py`) is
 written to be pointed at the *next* model too. The comparison so far:
 
-| | SmolVLA (450 M) | X-VLA (879.7 M) |
+Both measured on this board, 1 real camera, 10 denoising steps, FP16 TRT engines:
+
+| | SmolVLA 450 M (`excav_A20k`) | X-VLA 879.7 M (`split_fp16`) |
 |---|---:|---:|
 | engines | 9 | 12 |
-| chunk latency | 210–240 ms | 390 ms |
+| chunk latency | 210 ms | 390 ms |
 | actions per chunk | 50 | 30 |
-| replan rate | ~4.5 Hz | 2.56 Hz |
-| peak RSS | — | 5.71 GB |
+| motion per chunk @30 fps | 1.67 s (13% duty) | 1.0 s (39% duty) |
+| replan rate | 4.8 Hz | 2.56 Hz |
+| **peak RSS** | **2.21 GB** | **5.71 GB** |
+| free RAM left of 7.4 GB | 4.86 GB | 1.47 GB |
+| bytes/param resident | ~4.4 | ~6.9 |
 | KV cache across denoising steps | yes | **impossible** (see below) |
+
+The memory column is the striking one: **X-VLA is 2x the parameters but 2.6x the resident
+memory**, and it is the difference between 4.9 GB of headroom for the rest of the robot and
+1.5 GB. Cost per parameter is also worse (~6.9 vs ~4.4 bytes), which points at TRT
+per-engine activation memory rather than weights — 12 engines instead of 9, a 262-token
+sequence through 24 blocks at hidden 1024, and DaViT feature maps.
 
 Short answer so far: **the memory side works, but only with a finer split than SmolVLA
 needed.** The numbers behind that are in [`notes/split_design.md`](notes/split_design.md).
