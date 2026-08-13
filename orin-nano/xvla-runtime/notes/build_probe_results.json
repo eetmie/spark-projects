@@ -1,0 +1,62 @@
+[
+  {
+    "blocks": 4,
+    "precision": "fp16",
+    "params": 50384896,
+    "fp32_weights_gb": 0.202,
+    "onnx_mb": 201.5,
+    "peak_rss_gb": 4.32,
+    "export_consumed_gb": 1.16,
+    "export_s": 7.1,
+    "build_s": 34.7,
+    "build_peak_rss_gb": 4.32,
+    "infer_ms": 7.0,
+    "engine_cache_mb": 202.3,
+    "providers": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "build_consumed_gb": 3.62,
+    "build_min_available_gb": 2.88
+  },
+  {
+    "blocks": 8,
+    "precision": "fp16",
+    "params": 100769792,
+    "fp32_weights_gb": 0.403,
+    "onnx_mb": 403.0,
+    "peak_rss_gb": 5.42,
+    "export_consumed_gb": 1.93,
+    "export_s": 9.2,
+    "build_s": 37.7,
+    "build_peak_rss_gb": 5.42,
+    "infer_ms": 11.4,
+    "engine_cache_mb": 404.3,
+    "providers": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "build_consumed_gb": 4.19,
+    "build_min_available_gb": 1.69
+  },
+  {
+    "blocks": 12,
+    "precision": "fp16",
+    "params": 151154688,
+    "fp32_weights_gb": 0.605,
+    "onnx_mb": 604.5,
+    "peak_rss_gb": 6.59,
+    "export_consumed_gb": 2.72,
+    "export_s": 12.8,
+    "build_s": 43.4,
+    "build_peak_rss_gb": 6.59,
+    "infer_ms": 14.7,
+    "engine_cache_mb": 908.3,
+    "providers": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "build_consumed_gb": 5.49,
+    "build_min_available_gb": 0.47
+  }
+]

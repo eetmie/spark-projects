@@ -1,0 +1,542 @@
+[
+  {
+    "config": "baseline",
+    "start_rss_gb": 0.04,
+    "loaded_rss_gb": 6.46,
+    "session_cost_gb": 6.41,
+    "available_after_gb": 0.29,
+    "peak_rss_gb": 6.72,
+    "total_params": 875117568,
+    "fp32_weights_gb": 3.5,
+    "engines": [
+      {
+        "name": "vision_0",
+        "params": 89554944,
+        "d_rss_gb": 2.560616,
+        "rss_gb": 2.602392,
+        "load_s": 4.199371814727783,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "vision_1",
+        "params": 75700224,
+        "d_rss_gb": 0.37472400000000006,
+        "rss_gb": 2.977116,
+        "load_s": 1.8579390048980713,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "vision_2",
+        "params": 94578688,
+        "d_rss_gb": 0.4629240000000001,
+        "rss_gb": 3.44004,
+        "load_s": 2.6920814514160156,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "vision_3",
+        "params": 103000064,
+        "d_rss_gb": 0.4142079999999999,
+        "rss_gb": 3.854248,
+        "load_s": 4.357478141784668,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "text_encoder_0",
+        "params": 94507008,
+        "d_rss_gb": 0.4012760000000002,
+        "rss_gb": 4.255524,
+        "load_s": 3.259765625,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "text_encoder_1",
+        "params": 88173568,
+        "d_rss_gb": 0.7355640000000001,
+        "rss_gb": 4.991088,
+        "load_s": 2.7192180156707764,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "text_encoder_2",
+        "params": 25192448,
+        "d_rss_gb": 0.047379999999999534,
+        "rss_gb": 5.038468,
+        "load_s": 0.4863088130950928,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "cond",
+        "params": 2099200,
+        "d_rss_gb": 0.01237599999999972,
+        "rss_gb": 5.050844,
+        "load_s": 0.05969405174255371,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "denoise_0",
+        "params": 75577344,
+        "d_rss_gb": 0.4508960000000002,
+        "rss_gb": 5.50174,
+        "load_s": 2.177567958831787,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "denoise_1",
+        "params": 75577344,
+        "d_rss_gb": 0.4638439999999999,
+        "rss_gb": 5.965584,
+        "load_s": 2.2481870651245117,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "denoise_2",
+        "params": 75577344,
+        "d_rss_gb": 0.24046400000000023,
+        "rss_gb": 6.206048,
+        "load_s": 2.7745299339294434,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "denoise_3",
+        "params": 75579392,
+        "d_rss_gb": 0.24928400000000028,
+        "rss_gb": 6.455332,
+        "load_s": 2.4122872352600098,
+        "providers": "Tensorrt+CUDA+CPU"
+      }
+    ]
+  },
+  {
+    "config": "no_arena",
+    "start_rss_gb": 0.04,
+    "loaded_rss_gb": 6.3,
+    "session_cost_gb": 6.25,
+    "available_after_gb": 0.44,
+    "peak_rss_gb": 6.69,
+    "total_params": 875117568,
+    "fp32_weights_gb": 3.5,
+    "engines": [
+      {
+        "name": "vision_0",
+        "params": 89554944,
+        "d_rss_gb": 2.571056,
+        "rss_gb": 2.613,
+        "load_s": 4.269700288772583,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "vision_1",
+        "params": 75700224,
+        "d_rss_gb": 0.3788239999999998,
+        "rss_gb": 2.991824,
+        "load_s": 1.867568016052246,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "vision_2",
+        "params": 94578688,
+        "d_rss_gb": 0.468944,
+        "rss_gb": 3.460768,
+        "load_s": 2.6374945640563965,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "vision_3",
+        "params": 103000064,
+        "d_rss_gb": 0.31984400000000024,
+        "rss_gb": 3.780612,
+        "load_s": 4.150508880615234,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "text_encoder_0",
+        "params": 94507008,
+        "d_rss_gb": 0.4009680000000002,
+        "rss_gb": 4.18158,
+        "load_s": 3.239023447036743,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "text_encoder_1",
+        "params": 88173568,
+        "d_rss_gb": 0.8212399999999995,
+        "rss_gb": 5.00282,
+        "load_s": 2.7681427001953125,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "text_encoder_2",
+        "params": 25192448,
+        "d_rss_gb": 0.04738000000000042,
+        "rss_gb": 5.0502,
+        "load_s": 0.4907522201538086,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "cond",
+        "params": 2099200,
+        "d_rss_gb": 0.012379999999999391,
+        "rss_gb": 5.06258,
+        "load_s": 0.06118464469909668,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "denoise_0",
+        "params": 75577344,
+        "d_rss_gb": 0.4700560000000005,
+        "rss_gb": 5.532636,
+        "load_s": 2.1679368019104004,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "denoise_1",
+        "params": 75577344,
+        "d_rss_gb": 0.4348599999999996,
+        "rss_gb": 5.967496,
+        "load_s": 2.2223148345947266,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "denoise_2",
+        "params": 75577344,
+        "d_rss_gb": 0.5128640000000004,
+        "rss_gb": 6.48036,
+        "load_s": 2.50057053565979,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "denoise_3",
+        "params": 75579392,
+        "d_rss_gb": -0.18488799999999994,
+        "rss_gb": 6.295472,
+        "load_s": 2.7521462440490723,
+        "providers": "Tensorrt+CUDA+CPU"
+      }
+    ]
+  },
+  {
+    "config": "no_arena_no_pattern",
+    "start_rss_gb": 0.04,
+    "loaded_rss_gb": 6.3,
+    "session_cost_gb": 6.26,
+    "available_after_gb": 0.43,
+    "peak_rss_gb": 6.71,
+    "total_params": 875117568,
+    "fp32_weights_gb": 3.5,
+    "engines": [
+      {
+        "name": "vision_0",
+        "params": 89554944,
+        "d_rss_gb": 2.571588,
+        "rss_gb": 2.613496,
+        "load_s": 4.296655893325806,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "vision_1",
+        "params": 75700224,
+        "d_rss_gb": 0.37472800000000017,
+        "rss_gb": 2.988224,
+        "load_s": 1.8407611846923828,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "vision_2",
+        "params": 94578688,
+        "d_rss_gb": 0.46075199999999983,
+        "rss_gb": 3.448976,
+        "load_s": 2.693110466003418,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "vision_3",
+        "params": 103000064,
+        "d_rss_gb": 0.39470800000000006,
+        "rss_gb": 3.843684,
+        "load_s": 4.3461151123046875,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "text_encoder_0",
+        "params": 94507008,
+        "d_rss_gb": 0.36161999999999983,
+        "rss_gb": 4.205304,
+        "load_s": 3.3509271144866943,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "text_encoder_1",
+        "params": 88173568,
+        "d_rss_gb": 0.7860839999999998,
+        "rss_gb": 4.991388,
+        "load_s": 2.7413887977600098,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "text_encoder_2",
+        "params": 25192448,
+        "d_rss_gb": 0.04738000000000042,
+        "rss_gb": 5.038768,
+        "load_s": 0.49327850341796875,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "cond",
+        "params": 2099200,
+        "d_rss_gb": 0.01237599999999972,
+        "rss_gb": 5.051144,
+        "load_s": 0.06278467178344727,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "denoise_0",
+        "params": 75577344,
+        "d_rss_gb": 0.47492800000000024,
+        "rss_gb": 5.526072,
+        "load_s": 2.19269061088562,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "denoise_1",
+        "params": 75577344,
+        "d_rss_gb": 0.4368759999999998,
+        "rss_gb": 5.962948,
+        "load_s": 2.1806559562683105,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "denoise_2",
+        "params": 75577344,
+        "d_rss_gb": 0.551704,
+        "rss_gb": 6.514652,
+        "load_s": 2.4566733837127686,
+        "providers": "Tensorrt+CUDA+CPU"
+      },
+      {
+        "name": "denoise_3",
+        "params": 75579392,
+        "d_rss_gb": -0.21225200000000033,
+        "rss_gb": 6.3024,
+        "load_s": 2.767324447631836,
+        "providers": "Tensorrt+CUDA+CPU"
+      }
+    ]
+  },
+  {
+    "config": "no_cuda_ep",
+    "start_rss_gb": 0.04,
+    "loaded_rss_gb": 6.32,
+    "session_cost_gb": 6.28,
+    "available_after_gb": 0.46,
+    "peak_rss_gb": 6.71,
+    "total_params": 875117568,
+    "fp32_weights_gb": 3.5,
+    "engines": [
+      {
+        "name": "vision_0",
+        "params": 89554944,
+        "d_rss_gb": 2.556956,
+        "rss_gb": 2.598836,
+        "load_s": 4.283391714096069,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "vision_1",
+        "params": 75700224,
+        "d_rss_gb": 0.35629599999999995,
+        "rss_gb": 2.955132,
+        "load_s": 1.8627099990844727,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "vision_2",
+        "params": 94578688,
+        "d_rss_gb": 0.46893600000000024,
+        "rss_gb": 3.424068,
+        "load_s": 2.7303149700164795,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "vision_3",
+        "params": 103000064,
+        "d_rss_gb": 0.429856,
+        "rss_gb": 3.853924,
+        "load_s": 4.239484786987305,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "text_encoder_0",
+        "params": 94507008,
+        "d_rss_gb": 0.34759600000000024,
+        "rss_gb": 4.20152,
+        "load_s": 3.219464063644409,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "text_encoder_1",
+        "params": 88173568,
+        "d_rss_gb": 0.7312199999999995,
+        "rss_gb": 4.93274,
+        "load_s": 2.667213201522827,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "text_encoder_2",
+        "params": 25192448,
+        "d_rss_gb": 0.03508800000000001,
+        "rss_gb": 4.967828,
+        "load_s": 0.4821021556854248,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "cond",
+        "params": 2099200,
+        "d_rss_gb": 0.002136000000000138,
+        "rss_gb": 4.969964,
+        "load_s": 0.060109853744506836,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "denoise_0",
+        "params": 75577344,
+        "d_rss_gb": 0.44796800000000037,
+        "rss_gb": 5.417932,
+        "load_s": 2.131870985031128,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "denoise_1",
+        "params": 75577344,
+        "d_rss_gb": 0.4301719999999998,
+        "rss_gb": 5.848104,
+        "load_s": 2.168959617614746,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "denoise_2",
+        "params": 75577344,
+        "d_rss_gb": 0.6320119999999996,
+        "rss_gb": 6.480116,
+        "load_s": 2.0858163833618164,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "denoise_3",
+        "params": 75579392,
+        "d_rss_gb": -0.15610400000000002,
+        "rss_gb": 6.324012,
+        "load_s": 2.980356216430664,
+        "providers": "Tensorrt+CPU"
+      }
+    ]
+  },
+  {
+    "config": "no_cuda_ep_no_arena",
+    "start_rss_gb": 0.04,
+    "loaded_rss_gb": 6.32,
+    "session_cost_gb": 6.27,
+    "available_after_gb": 0.41,
+    "peak_rss_gb": 6.73,
+    "total_params": 875117568,
+    "fp32_weights_gb": 3.5,
+    "engines": [
+      {
+        "name": "vision_0",
+        "params": 89554944,
+        "d_rss_gb": 2.5572679999999997,
+        "rss_gb": 2.59928,
+        "load_s": 4.264494180679321,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "vision_1",
+        "params": 75700224,
+        "d_rss_gb": 0.3522000000000003,
+        "rss_gb": 2.95148,
+        "load_s": 1.8370897769927979,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "vision_2",
+        "params": 94578688,
+        "d_rss_gb": 0.48941599999999985,
+        "rss_gb": 3.440896,
+        "load_s": 2.6706128120422363,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "vision_3",
+        "params": 103000064,
+        "d_rss_gb": 0.3790279999999999,
+        "rss_gb": 3.819924,
+        "load_s": 4.115017414093018,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "text_encoder_0",
+        "params": 94507008,
+        "d_rss_gb": 0.3498199999999998,
+        "rss_gb": 4.169744,
+        "load_s": 3.288026809692383,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "text_encoder_1",
+        "params": 88173568,
+        "d_rss_gb": 0.7630400000000002,
+        "rss_gb": 4.932784,
+        "load_s": 2.722320556640625,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "text_encoder_2",
+        "params": 25192448,
+        "d_rss_gb": 0.03508800000000001,
+        "rss_gb": 4.967872,
+        "load_s": 0.4800748825073242,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "cond",
+        "params": 2099200,
+        "d_rss_gb": 0.002136000000000138,
+        "rss_gb": 4.970008,
+        "load_s": 0.05597043037414551,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "denoise_0",
+        "params": 75577344,
+        "d_rss_gb": 0.4510880000000004,
+        "rss_gb": 5.421096,
+        "load_s": 2.171114683151245,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "denoise_1",
+        "params": 75577344,
+        "d_rss_gb": 0.4596359999999997,
+        "rss_gb": 5.880732,
+        "load_s": 2.1939446926116943,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "denoise_2",
+        "params": 75577344,
+        "d_rss_gb": 0.6021320000000001,
+        "rss_gb": 6.482864,
+        "load_s": 2.019322633743286,
+        "providers": "Tensorrt+CPU"
+      },
+      {
+        "name": "denoise_3",
+        "params": 75579392,
+        "d_rss_gb": -0.16718800000000034,
+        "rss_gb": 6.315676,
+        "load_s": 2.9098923206329346,
+        "providers": "Tensorrt+CPU"
+      }
+    ]
+  }
+]
