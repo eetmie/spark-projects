@@ -55,6 +55,35 @@ Experimental but locally verified on NVIDIA GB10.
 - Run E launched: state-blind ablation (observation.state zeroed in a dataset variant +
   stats patched to mean 0/std 1), otherwise identical to run A. Tests camera-only control.
 
+## Verified 2026-08-14 (camera-only run E scored, exported, deployed)
+
+- **Camera-only control works.** Run E finished 30k steps and was scored across all 12
+  checkpoints: best = **E step 17500, disp_err 0.1387** (zero-action baseline 0.3901).
+  That is only **+5.1% vs the state-fed A@020000 (0.1320)** — dropping the IMU costs
+  almost nothing. Curve flat 0.1387-0.1422 from step 15000; no overfit by 30k (0.1410).
+  Run A re-scored with the patched eval reproduced 0.1320 exactly (no regression).
+- `eval_compare.py` gained `FPS_BY_REPO` + `STATE_BLIND_REPOS`: E's repo_id was a KeyError
+  in the old hardcoded fps lookup, and eval must feed **zeroed** state for state-blind runs
+  (the source dataset's real state reaches |120|, which E never saw).
+- **The state input is provably dead, not removed.** `model.state_proj.weight` is
+  bit-identical across ALL E checkpoints (max delta 0.0) while its bias drifts: a
+  constant-zero input gives the weight zero gradient. So the weight still sits at its
+  *pretrained* value and is nonzero — feeding real state does NOT get ignored, it injects
+  a garbage prefix token. Measured: plausible angles instead of zeros shift the commanded
+  action by up to **0.434 on the [-1,1] joystick scale** (mean 0.093).
+- `exports-split-excavE17500` exported and provenance-checked: action_out_proj,
+  action_in_proj and action_time_mlp_in all match E@017500 exactly and differ from
+  E@015000/020000/030000 and from A@020000. Parity vs the **PyTorch checkpoint** (no
+  monolith needed): cosine 1.0000000, max_abs 2.03e-6 at zero state, 2.38e-6 at random
+  state. Shipped stats.json verified identical to the checkpoint's baked-in normalizer.
+- Deployed to the Orin as `excav_E17500_split` (24/24 sha256 verified). On-device synthetic
+  TRT proof: engines build 26-27 s each, **204-251 ms/inference**.
+- `kaivuriprokkis/lerobot_vla/run_inference.py` gained `resolve_state_blind()`: it reads
+  `state_blind` from export_info.json and feeds the policy zeros (the IMU value is still
+  logged, marked `state(unused)=`). Additive and flag-gated — A20k re-verified unchanged
+  (no warning, `state=`, 215 ms). Without this the bundle loads and runs *fine* and drives
+  the machine wrong, because the state tensor is still in the interface.
+
 ## Not Yet Verified
 
 - Exporting a fine-tuned LoRA checkpoint after a real training run (excavator runs are full

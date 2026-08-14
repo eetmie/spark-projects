@@ -52,6 +52,18 @@ VAL_EPISODES = [3, 11, 19, 27]
 # 30/10/6 fps variants; every model is scored from identical observations.
 STRIDE_EVAL = 15
 
+FPS_BY_REPO = {
+    "local/masi_kaivuri_juusto": 30,
+    "local/masi_kaivuri_10fps": 10,
+    "local/masi_kaivuri_6fps": 6,
+    "local/masi_kaivuri_nostate": 30,
+}
+# Runs trained on a state-blind dataset saw observation.state == 0 at every frame,
+# and their normalizer was patched to mean 0 / std 1, which makes normalization the
+# identity. Feeding them the source dataset's real state would push raw joint values
+# (|state| up to ~120) straight into the model instead of the zeros it trained on.
+STATE_BLIND_REPOS = {"local/masi_kaivuri_nostate"}
+
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -98,15 +110,19 @@ def predict_chunks(ckpt, src_ds, points, batch_size, device):
     policy = SmolVLAPolicy.from_pretrained(ckpt)
     policy.eval().to(device)
     pre, post = make_pre_post_processors(policy.config, pretrained_path=ckpt)
-    fps = json.loads((ckpt / "train_config.json").read_text())["dataset"]["repo_id"]
-    fps = {"local/masi_kaivuri_juusto": 30, "local/masi_kaivuri_10fps": 10, "local/masi_kaivuri_6fps": 6}[fps]
+    repo_id = json.loads((ckpt / "train_config.json").read_text())["dataset"]["repo_id"]
+    fps = FPS_BY_REPO[repo_id]
+    state_blind = repo_id in STATE_BLIND_REPOS
 
     chunks = []
     for i in range(0, len(points), batch_size):
         group = points[i : i + batch_size]
         items = [src_ds[j] for j in group]
+        state = torch.stack([it["observation.state"] for it in items])
+        if state_blind:
+            state = torch.zeros_like(state)
         batch = {
-            "observation.state": torch.stack([it["observation.state"] for it in items]),
+            "observation.state": state,
             "observation.images.cam1": torch.stack([it["observation.images.cam1"] for it in items]),
             "task": [TASK] * len(group),
         }
