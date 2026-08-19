@@ -2,16 +2,18 @@
 """Score every saved checkpoint of every run, so we can see where held-out
 performance peaks instead of assuming the last step is the best one.
 
-With 27 training episodes and 50-260 epochs, overfitting is expected. This turns
-that into data: it plots held-out displacement error against training step for
-each run, and reports the best checkpoint per run rather than the final one.
+With a few dozen training episodes and tens of epochs, overfitting is expected.
+This turns that into data: it plots held-out displacement error against training
+step for each run, and reports the best checkpoint per run rather than the final one.
 
 Reuses eval_compare's scoring so the numbers are the same ones the headline table
-reports -- identical 30 fps observations for every model, each chunk zero-order
-held onto a common 30 Hz grid, scored on integrated command error.
+reports -- identical source-rate observations for every model, each model fed only
+the cameras it was trained on, each chunk zero-order held onto a common grid,
+scored on integrated command error.
 
 Usage:
-    python eval_curve.py --out-dir ~/smolvla/outputs/excavator_long
+    python eval_curve.py --preset digging
+    python eval_curve.py --preset kaivuri --out-dir <sweep dir>
 """
 
 import argparse
@@ -24,11 +26,18 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from eval_compare import SRC_FPS, VAL_EPISODES, eval_points, load_ground_truth, predict_chunks, score, to_30hz
+from eval_compare import (
+    PRESETS,
+    eval_points,
+    load_ground_truth,
+    predict_chunks,
+    score,
+    source_meta,
+    to_30hz,
+)
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-SRC = Path("/home/masi-pgx/Desktop/masi_kaivuri_juusto")
 SERIES_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
 TEXT_PRIMARY, TEXT_SECONDARY = "#0b0b0b", "#52514e"
 GRID_COLOR, SURFACE = "#dcdcd8", "#fcfcfb"
@@ -37,7 +46,8 @@ BASELINE_COLOR = "#52514e"
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--out-dir", type=Path, required=True, help="sweep output dir holding the runs")
+    p.add_argument("--preset", choices=sorted(PRESETS), default="digging")
+    p.add_argument("--out-dir", type=Path, default=None, help="override the preset's sweep dir")
     p.add_argument("--runs", nargs="*", default=None)
     p.add_argument("--horizon", type=float, default=1.5, help="scoring horizon in seconds")
     p.add_argument("--batch-size", type=int, default=8)
@@ -47,16 +57,21 @@ def parse_args():
 
 def main():
     args = parse_args()
-    actions, bounds = load_ground_truth()
-    points = eval_points(bounds, args.horizon)
-    n = int(round(args.horizon * SRC_FPS))
+    preset = PRESETS[args.preset]
+    if args.out_dir is None:
+        args.out_dir = preset.out_dir
+    src_fps, joints = source_meta(preset)
+    actions, bounds = load_ground_truth(preset)
+    points = eval_points(preset, bounds, args.horizon, src_fps)
+    n = int(round(args.horizon * src_fps))
     gt = np.stack([actions[p : p + n] for p in points])
+    act_dim = gt.shape[-1]
 
     runs = args.runs or sorted(d.name for d in args.out_dir.iterdir() if (d / "checkpoints").is_dir())
-    src_ds = LeRobotDataset(repo_id="local/src", root=SRC, video_backend="torchcodec")
+    src_ds = LeRobotDataset(repo_id="local/src", root=preset.src, video_backend="torchcodec")
 
     # Zero-action reference line: anything above it has not learned the task.
-    baseline = score(np.zeros((len(points), n, 4), np.float32), gt)["disp_err"]
+    baseline = score(np.zeros((len(points), n, act_dim), np.float32), gt, joints, src_fps)["disp_err"]
     print(f"{len(points)} eval points, horizon {args.horizon}s, zero-action baseline disp_err={baseline:.4f}\n")
 
     curves = {}
@@ -70,11 +85,14 @@ def main():
             ckpt = ck_dir / s / "pretrained_model"
             if not (ckpt / "model.safetensors").exists():
                 continue
-            chunk, fps = predict_chunks(ckpt, src_ds, points, args.batch_size, args.device)
+            chunk, fps, cams, ptype = predict_chunks(
+                ckpt, src_ds, points, args.batch_size, args.device, preset, src_fps)
             if chunk.shape[1] / fps + 1e-6 < args.horizon:
                 continue
-            sc = score(to_30hz(chunk, fps, n), gt)
-            curves[name].append({"step": int(s), "fps": fps, **sc})
+            sc = score(to_30hz(chunk, fps, n, src_fps), gt, joints, src_fps)
+            cam_short = [c.rsplit(".", 1)[-1] for c in cams]
+            curves[name].append({"step": int(s), "fps": fps, "cameras": cam_short,
+                                 "policy": ptype, **sc})
             print(f"  [{name}] step {int(s):>6}  disp_err={sc['disp_err']:.4f}  mae={sc['mae']:.4f}  move={sc['move_ratio']:.2f}", flush=True)
 
     if not curves:
@@ -114,7 +132,10 @@ def main():
         xs = [r["step"] for r in pts]
         ys = [r["disp_err"] for r in pts]
         color = SERIES_COLORS[i % len(SERIES_COLORS)]
-        ax.plot(xs, ys, color=color, lw=2.0, marker="o", ms=5, label=f"{name} ({pts[0]['fps']}fps)")
+        cams = "+".join(pts[0].get("cameras") or [])
+        tag = cams if len({tuple(p.get("cameras") or []) for c in curves.values() for p in c}) > 1 \
+            else f"{pts[0]['fps']}fps"
+        ax.plot(xs, ys, color=color, lw=2.0, marker="o", ms=5, label=f"{name} ({tag})")
         best = min(pts, key=lambda r: r["disp_err"])
         ax.annotate(
             name,
