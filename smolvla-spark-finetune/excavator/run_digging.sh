@@ -79,6 +79,9 @@ config_for() {
     ir)         echo "$DS_IR|local/masi_digging_ir"                ;;
     both)       echo "$DS_BOTH|local/masi_digging_both"            ;;
     clean_ir)   echo "$DS_CLEAN_IR|local/masi_digging_clean_ir"    ;;
+    # Same dataset as clean_ir -- a separate name only so an aggressive-chunk run gets
+    # its own output dir instead of colliding with the chunk-50 one. Pass CHUNK=12.
+    clean_ir12) echo "$DS_CLEAN_IR|local/masi_digging_clean_ir"    ;;
     clean_both) echo "$DS_CLEAN|local/masi_digging_clean_both"     ;;
     *) return 1 ;;
   esac
