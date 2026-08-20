@@ -27,7 +27,7 @@ set -uo pipefail
 
 ROOT=/home/masi-pgx/spark-projects/smolvla-spark-finetune   # was ~/smolvla, which is gone
 VENV=$ROOT/.venv/bin
-OUT=$ROOT/outputs/digging
+OUT=${OUT:-$ROOT/outputs/digging}   # overridable so a new dataset gets a fresh dir
 LOGS=$OUT/logs
 
 STEPS=${STEPS:-25000}
@@ -40,20 +40,46 @@ WORKERS=${WORKERS:-10}
 
 DS_BOTH=/home/masi-pgx/Desktop/masi_digging
 DS_IR=$ROOT/datasets/masi_digging_ir
+# Trimmed of episode-boundary dead air and with the dirty 83-90 block skipped;
+# built by make_trim_variant.py + make_camera_variant.py. See NOTES-dataset-trim.md.
+DS_CLEAN=$ROOT/datasets/masi_digging_clean
+DS_CLEAN_IR=$ROOT/datasets/masi_digging_clean_ir
 
-# Held out for eval_compare/eval_curve: every 10th episode from 5, 8 of 82 (9.8%).
-# Spread across the session so the split is not a single stretch of the recording.
-VAL_EPISODES="5 15 25 35 45 55 65 75"
-TRAIN_EPS=$(python3 -c "
-val={$(echo $VAL_EPISODES | tr ' ' ',')}
-print('['+','.join(str(e) for e in range(82) if e not in val)+']')")
+# Held out for eval_compare/eval_curve, spread across the session so the split is not a
+# single stretch of the recording.
+# Episode count is READ FROM THE DATASET, never hardcoded. It used to be a literal
+# range(82); when masi_digging grew to 189 episodes that would have silently trained on
+# episodes 0-81 only and thrown away every new one, with no error and a plausible-looking
+# loss curve. Held-out = every 10th episode from 5 (~10%), spread across the recording.
+# Derived PER RUN from that run's own dataset, because variants differ in episode
+# count: masi_digging has 189, masi_digging_clean has 181 (the dirty 83-90 block was
+# dropped). Deriving once from DS_BOTH would have given a cleaned run the wrong split
+# silently.
+#
+# VAL_EPISODES can be overridden. Dropping episodes RENUMBERS the survivors, so holding
+# out "every 10th from 5" on a cleaned dataset scores different recordings than the same
+# rule on the source. To compare a cleaned run against an earlier sweep, pass the mapped
+# indices explicitly, e.g. for masi_digging_clean (source 83-90 removed):
+#   VAL_EPISODES="5 15 25 35 45 55 65 75 87 97 107 117 127 137 147 157 167 177"
+# which is the same 19 recordings the 189-episode sweep held out, less source ep 85.
+split_for() {
+  local root=$1 n val train
+  n=$(python3 -c "import json;print(json.load(open('$root/meta/info.json'))['total_episodes'])")
+  val=${VAL_EPISODES:-$(python3 -c "print(' '.join(str(e) for e in range(5,$n,10)))")}
+  train=$(python3 -c "
+val={$(echo $val | tr ' ' ',')}
+print('['+','.join(str(e) for e in range($n) if e not in val)+']')")
+  echo "$n|$val|$train"
+}
 
 mkdir -p "$LOGS"
 
 config_for() {
   case "$1" in
-    ir)   echo "$DS_IR|local/masi_digging_ir"    ;;
-    both) echo "$DS_BOTH|local/masi_digging_both" ;;
+    ir)         echo "$DS_IR|local/masi_digging_ir"                ;;
+    both)       echo "$DS_BOTH|local/masi_digging_both"            ;;
+    clean_ir)   echo "$DS_CLEAN_IR|local/masi_digging_clean_ir"    ;;
+    clean_both) echo "$DS_CLEAN|local/masi_digging_clean_both"     ;;
     *) return 1 ;;
   esac
 }
@@ -65,6 +91,10 @@ train_one() {
 
   local dir=$OUT/$name
   local log=$LOGS/$name.log
+
+  local sp; sp=$(split_for "$root")
+  local n_eps=${sp%%|*}; local _rest=${sp#*|}
+  local val_eps=${_rest%%|*}; local train_eps=${_rest##*|}
 
   if [ -d "$dir/checkpoints/last" ]; then
     local done_steps
@@ -79,11 +109,12 @@ train_one() {
       --resume=true >> "$log" 2>&1
   else
     echo "[$(date +%H:%M:%S)] === run $name: $repo chunk=$CHUNK steps=$STEPS ==="
+    echo "[$(date +%H:%M:%S)]     $n_eps episodes, held out: $val_eps"
     WANDB_MODE=disabled "$VENV/lerobot-train" \
       --dataset.repo_id="$repo" \
       --dataset.root="$root" \
       --dataset.video_backend=torchcodec \
-      --dataset.episodes="$TRAIN_EPS" \
+      --dataset.episodes="$train_eps" \
       --policy.type=smolvla \
       --policy.pretrained_path=lerobot/smolvla_base \
       --policy.load_vlm_weights=true \
@@ -119,7 +150,7 @@ RUNS=("$@")
 [ ${#RUNS[@]} -eq 0 ] && RUNS=(ir both)
 
 echo "digging sweep start $(date)"
-echo "held-out episodes: $VAL_EPISODES"
+echo "held-out override: ${VAL_EPISODES:-<derived per run: every 10th from 5>}"
 echo "steps=$STEPS batch=$BATCH chunk=$CHUNK lr=$LR workers=$WORKERS"
 for r in "${RUNS[@]}"; do train_one "$r"; done
 echo "digging sweep done $(date)"

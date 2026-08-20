@@ -90,6 +90,32 @@ PRESETS = {
         val_episodes=[5, 15, 25, 35, 45, 55, 65, 75],
         stride_eval=15,
     ),
+    # The 2026-08-20 re-run on the GROWN dataset: 189 episodes / 113781 frames. The first
+    # 82 episodes are byte-identical to the sweep above (verified: they still sum to 41765
+    # frames) and 107 were appended, so `digging` above remains reproducible and this
+    # held-out list is a clean superset of it. Same task, same 3-dim state, same cameras.
+    # val_episodes must stay in step with run_digging.sh, which derives the same
+    # range(5, N_EPS, 10) from the dataset's own info.json.
+    "digging189": Preset(
+        src=Path("/home/masi-pgx/Desktop/masi_digging"),
+        out_dir=ROOT / "outputs/digging189",
+        task="move the sand to the container",
+        val_episodes=list(range(5, 189, 10)),
+        stride_eval=15,
+    ),
+    # Boundary dead air trimmed off every episode and the dirty 83-90 block skipped
+    # (built by make_trim_variant.py): 181 episodes / 103356 frames.
+    # val_episodes are the RENUMBERED ids of the same recordings digging189 held out,
+    # less source ep 85 which fell inside the dropped block -- so scores here are
+    # directly comparable to that sweep. Source ep -> clean ep is x if x < 83 else x-8.
+    "digging_clean": Preset(
+        src=ROOT / "datasets/masi_digging_clean",
+        out_dir=ROOT / "outputs/digging_clean",
+        task="move the sand to the container",
+        val_episodes=[5, 15, 25, 35, 45, 55, 65, 75,
+                      87, 97, 107, 117, 127, 137, 147, 157, 167, 177],
+        stride_eval=15,
+    ),
 }
 
 
