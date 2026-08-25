@@ -29,6 +29,8 @@ one FP16 TRT engine per heavy graph and runs the loop in backends/ort.py.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
+import json
 from pathlib import Path
 
 import torch
@@ -184,11 +186,148 @@ def _export(model, args_tuple, path, input_names, output_names, dynamic_axes=Non
     print(f"  wrote {path}  ({Path(path).stat().st_size / 1e6:.1f} MB)")
 
 
+# --- deploy metadata: stats.json, export_info.json, MANIFEST.sha256 -----------
+#
+# These three files were hand-assembled per deploy until now, which is why the
+# newer bundles silently lost them. A bundle without stats.json still LOADS —
+# both the Orin runtime and the benchmark fall back to identity normalization —
+# and then drives the machine with unnormalized actions. Writing them here, from
+# the checkpoint that was just exported, is the only way the bundle cannot
+# disagree with its own weights.
+
+
+def _resolve_ckpt_dir(model_id: str) -> Path | None:
+    """The local checkpoint dir, or the HF snapshot the id resolves to."""
+    p = Path(model_id).expanduser()
+    if p.is_dir():
+        return p
+    try:
+        from huggingface_hub import snapshot_download
+        return Path(snapshot_download(model_id))
+    except Exception:
+        return None
+
+
+def _read_norm_stats(ckpt_dir: Path) -> dict | None:
+    """The checkpoint's own normalizer -> lerobot `stats.json` shape.
+
+    The normalizer safetensors is the authority here, NOT the training dataset's
+    meta/stats.json: they are usually identical, but a bundle carrying stats from a
+    different run loads fine and produces wrong motion, so the stats have to come
+    from the same artefact as the weights. Keys are flat `<feature>.<stat>`;
+    stats.json nests them and keeps the tensor shape (image stats stay [3,1,1]).
+    """
+    hits = sorted(ckpt_dir.glob("policy_preprocessor_step_*_normalizer_processor.safetensors"))
+    if not hits:
+        return None
+    from safetensors.torch import load_file
+
+    stats: dict[str, dict] = {}
+    for key, tensor in load_file(str(hits[0])).items():
+        feature, stat = key.rsplit(".", 1)
+        stats.setdefault(feature, {})[stat] = tensor.float().tolist()
+    return stats
+
+
+def _dataset_meta(ckpt_dir: Path) -> tuple[int | None, str | None]:
+    """(fps, task) from the dataset this checkpoint was trained on, if reachable.
+
+    `train_config.json` records the dataset root as an absolute path, so this works
+    for a local fine-tune and quietly returns (None, None) for a Hub base model that
+    was never trained here.
+    """
+    cfg_f = ckpt_dir / "train_config.json"
+    if not cfg_f.exists():
+        return None, None
+    try:
+        root = json.loads(cfg_f.read_text()).get("dataset", {}).get("root")
+    except Exception:
+        return None, None
+    if not root or not (meta := Path(root) / "meta").is_dir():
+        return None, None
+
+    fps = None
+    if (info := meta / "info.json").exists():
+        try:
+            fps = json.loads(info.read_text()).get("fps")
+        except Exception:
+            pass
+
+    task = None
+    if (tasks := meta / "tasks.parquet").exists():
+        try:
+            import pandas as pd
+            col = pd.read_parquet(tasks)
+            # one task per dataset here; take the first and let --task override.
+            task = str(col["task"].iloc[0]) if "task" in col else str(col.index[0])
+        except Exception:
+            pass
+    return fps, task
+
+
+def _feature_dims(stats: dict | None) -> tuple[int | None, int | None, list[str]]:
+    """Real (state_dim, action_dim, camera keys) as the checkpoint was trained.
+
+    The graphs are exported at the policy's PADDED width (32/32); the robot's real
+    widths live only in the stats. Recording both is what lets a consumer slice the
+    padding off without being told the numbers out of band.
+    """
+    if not stats:
+        return None, None, []
+    def width(key):
+        v = stats.get(key, {}).get("mean")
+        return len(v) if isinstance(v, list) else None
+    cams = sorted(k for k in stats if k.startswith("observation.images."))
+    return width("observation.state"), width("action"), cams
+
+
+def _git_sha(path: Path) -> str | None:
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def write_manifest(out: Path) -> int:
+    """sha256 of every file in the bundle, so an rsync can be verified on arrival.
+
+    Written last and excludes itself. `sha256sum -c MANIFEST.sha256` on the Orin is
+    the check — the graphs travel as .onnx + .onnx.data pairs and a truncated
+    external-data file fails at engine-build time with an error that names neither.
+    """
+    import hashlib
+
+    lines = []
+    for f in sorted(out.rglob("*")):
+        if not f.is_file() or f.name == "MANIFEST.sha256":
+            continue
+        h = hashlib.sha256()
+        with f.open("rb") as fh:
+            for block in iter(lambda: fh.read(1 << 20), b""):
+                h.update(block)
+        lines.append(f"{h.hexdigest()}  {f.relative_to(out)}")
+    (out / "MANIFEST.sha256").write_text("\n".join(lines) + "\n")
+    return len(lines)
+
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model-id", default="lerobot/smolvla_base")
     ap.add_argument("--out-dir", default="exports-split")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--fps", type=int, default=None,
+                    help="control rate the actions were authored at. Auto-resolved from "
+                         "the training dataset; required if that is not reachable, because "
+                         "the Orin runtime otherwise has to guess it.")
+    ap.add_argument("--task", default=None,
+                    help="the instruction string. Auto-resolved from the training dataset.")
+    ap.add_argument("--state-blind", action="store_true",
+                    help="camera-only checkpoint: the state input is dead but still wired "
+                         "in, and MUST be fed zeros. run_inference reads this flag.")
     args = ap.parse_args()
 
     patch_smolvla_for_legacy_onnx_export()
@@ -273,12 +412,82 @@ def main() -> None:
         proj(m.action_time_mlp_out, torch.zeros(1, chunk, ti_out.shape[-1], device=dev),
              "time_out_projector.onnx", "hidden")
 
-    # deploy bundle: tokenizer + normalization stats
+    # deploy bundle: tokenizer + normalization stats + provenance
     try:
         vlme.processor.tokenizer.save_pretrained(str(out / "tokenizer"))
         print(f"Saved tokenizer -> {out / 'tokenizer'}")
     except Exception as e:
         print(f"tokenizer save skipped: {e}")
+
+    ckpt_dir = _resolve_ckpt_dir(args.model_id)
+    stats = _read_norm_stats(ckpt_dir) if ckpt_dir else None
+    if stats:
+        (out / "stats.json").write_text(json.dumps(stats, indent=2))
+        # The runtime reads exactly two keys. A base checkpoint carries its pretraining
+        # buffer stats instead (`so100.buffer.action` and friends), which look like
+        # stats, satisfy `if stats:`, and normalize nothing — so count the keys that
+        # actually get used rather than the keys that happen to be present.
+        usable = [k for k in ("observation.state", "action") if k in stats]
+        print(f"Saved stats.json -> {len(stats)} features, "
+              f"{len(usable)}/2 the runtime can use ({', '.join(usable) or 'none'})")
+        if len(usable) < 2:
+            print("!! stats.json carries NO usable normalization for this robot.\n"
+                  "   The runtime falls back to IDENTITY normalization.\n"
+                  "   Expected for base weights; never ship this to a robot.")
+    else:
+        print("!! NO stats.json — the checkpoint carries no normalizer safetensors.\n"
+              "   The bundle will load with IDENTITY normalization and drive wrong.\n"
+              "   Fine for a base-weight latency benchmark; never ship it to a robot.")
+
+    ds_fps, ds_task = _dataset_meta(ckpt_dir) if ckpt_dir else (None, None)
+    fps = args.fps or ds_fps
+    task = args.task or ds_task
+    state_dim_real, action_dim_real, cameras = _feature_dims(stats)
+
+    info = {
+        "model_id": str(args.model_id),
+        "exported_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        "exporter_sha": _git_sha(Path(__file__).resolve().parent),
+        "opset": OPSET,
+        "torch": torch.__version__,
+        # --- what the runtime must not guess -------------------------------------
+        "fps": fps,
+        "task": task,
+        "state_blind": bool(args.state_blind),
+        # --- shapes: padded is what the graphs take, real is what the robot has ---
+        "chunk_size": int(chunk),
+        "num_steps": int(getattr(cfg, "num_steps", 10)),
+        "n_action_steps": int(getattr(cfg, "n_action_steps", chunk)),
+        "max_state_dim": int(state_dim),
+        "max_action_dim": int(act_dim),
+        "state_dim": state_dim_real,
+        "action_dim": action_dim_real,
+        "cameras": cameras,
+        # Slots, not real cameras: an unused slot still occupies its image tokens in
+        # the prefix, so a consumer has to pad to the same count or compute a
+        # different-length sequence. Derived from the prefix this export actually
+        # built (1 here; the published ainekko export is 2, prefix 177).
+        "n_cam_slots": int((prefix_len - lang_len - 1) // n_img),
+        "image_size": [int(img_h), int(img_w)],
+        "lang_len": int(lang_len),
+        "prefix_len": int(prefix_len),
+        "vlm_layers": int(L),
+        "vlm_dim": int(vlm_dim),
+        "expert_dim": int(exp_dim),
+        "graphs": sorted(f.name for f in out.glob("*.onnx")),
+    }
+    (out / "export_info.json").write_text(json.dumps(info, indent=2))
+    print(f"Saved export_info.json -> fps={fps} task={task!r} "
+          f"state_dim={state_dim_real} action_dim={action_dim_real} chunk={chunk}")
+
+    if fps is None:
+        print("!! fps is null — run_inference will fall back to a guess. Pass --fps.")
+    if task is None:
+        print("!! task is null — run_inference will refuse to start without --task.")
+
+    n = write_manifest(out)
+    print(f"Saved MANIFEST.sha256 -> {n} files "
+          f"(verify on the Orin with: cd <bundle> && sha256sum -c MANIFEST.sha256)")
 
     print(f"\nDONE — 9 split graphs in {out}/  (deploy bundle; FP32 gold stays the monolith)")
 

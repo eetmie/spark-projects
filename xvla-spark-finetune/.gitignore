@@ -1,3 +1,8 @@
 # The checkpoint is fetched and derived, never committed — see excavator/fetch_checkpoint.sh
 # and excavator/prepare_checkpoint.py. Same rule as ../orin-nano/xvla-runtime/models/.
 models/
+
+# The ONNX-export venv: lerobot 0.6.1, which uses transformers Florence2 (the
+# fine-tune venv next door vendors its own and cannot drive the exporter).
+.venv-export/
+exports/

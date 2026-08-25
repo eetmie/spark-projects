@@ -24,6 +24,7 @@ holding that alongside an export trace is what pushes this board into swap.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import json
 import subprocess
 import sys
@@ -38,6 +39,29 @@ GRAPHS = ("vision", "text_encoder", "cond", "denoise")
 DEFAULT_BUDGET_GB = 0.40
 
 
+def _vlm_parts(vlm):
+    """(owner, vision_tower, multi_modal_projector, language_model) across transformers versions.
+
+    transformers < 5 hangs the vision tower, the projector and the language model
+    directly off `Florence2ForConditionalGeneration`. transformers 5.x moved them one
+    level down onto a `Florence2Model` at `.model`, and only `get_image_features`
+    survives as a forwarding method — so `vlm.multi_modal_projector` raises
+    AttributeError there. Resolve through whichever level actually owns the modules,
+    and return that owner so `del owner.vision_tower` frees the right reference.
+    """
+    owner = getattr(vlm, "model", None)
+    if owner is None or not hasattr(owner, "language_model"):
+        owner = vlm
+    # getattr with a default, not attribute access: the text_encoder branch DELETES
+    # vision_tower to free 1.4 GB before tracing, and then builds TextHead, which calls
+    # back in here. Requiring the tower would make the second call fail on the first
+    # call's cleanup.
+    return (owner,
+            getattr(owner, "vision_tower", None),
+            getattr(owner, "multi_modal_projector", None),
+            owner.language_model)
+
+
 def _n_params(module) -> int:
     return sum(p.numel() for p in module.parameters())
 
@@ -45,22 +69,48 @@ def _n_params(module) -> int:
 def _validate_onnx(path, stem: str) -> None:
     """Reject a malformed graph at export time rather than at engine-build time.
 
-    The TorchScript exporter can silently emit nodes whose inputs are empty strings;
-    the file writes fine and only fails minutes later when ORT tries to load it
+    The TorchScript exporter can silently emit nodes whose *required* inputs are empty
+    strings; the file writes fine and only fails minutes later when ORT tries to load it
     ("input 0 is marked single but has an empty string"). Checking here keeps that
     failure next to the code that caused it.
+
+    An empty string is only a defect in a REQUIRED position. ONNX also uses "" as the
+    legal way to omit a trailing optional input, which is exactly what the tracer emits
+    for the DaViT window-attention `Pad` (`constant_value` omitted, because the pads are
+    all zero at 224x224 -- every feature map divides by the window size). Flagging those
+    rejected a graph that `onnx.checker` passes and that ORT loads happily, so the
+    op schema decides which positions matter rather than a blanket rule.
     """
     import onnx
+    from onnx import defs
 
     model = onnx.load(str(path), load_external_data=False)
-    dangling = [
-        (n.op_type, n.name) for n in model.graph.node if any(x == "" for x in n.input)
-    ]
+    opset = {o.domain: o.version for o in model.opset_import}
+
+    def required_positions(op_type: str, domain: str) -> set[int] | None:
+        """Indices whose input must be present, or None when the schema is unknown."""
+        try:
+            schema = defs.get_schema(op_type, opset.get(domain, opset.get("", 17)),
+                                     domain)
+        except Exception:
+            return None
+        return {i for i, inp in enumerate(schema.inputs)
+                if inp.option != defs.OpSchema.FormalParameterOption.Optional}
+
+    dangling = []
+    for n in model.graph.node:
+        req = required_positions(n.op_type, n.domain)
+        for i, name in enumerate(n.input):
+            if name != "":
+                continue
+            # Unknown schema: fall back to the old blanket rule rather than pass it.
+            if req is None or i in req:
+                dangling.append((n.op_type, n.name, i))
     if dangling:
         raise RuntimeError(
-            f"{stem}: {len(dangling)} node(s) exported with empty inputs, e.g. "
-            f"{dangling[:3]} -- the graph is unloadable. Usually a traced construct the "
-            f"exporter mishandled (in-place indexed assignment, expand(-1, ...))."
+            f"{stem}: {len(dangling)} node(s) exported with an empty REQUIRED input, "
+            f"e.g. {dangling[:3]} -- the graph is unloadable. Usually a traced construct "
+            f"the exporter mishandled (in-place indexed assignment, expand(-1, ...))."
         )
     onnx.checker.check_model(model)
 
@@ -133,7 +183,7 @@ def _build_wrappers():
         def __init__(self, vlm, keep_layers: int):
             super().__init__()
             self.embed = vlm.get_input_embeddings()
-            encoder = vlm.language_model.encoder
+            encoder = _vlm_parts(vlm)[3].encoder
             self.embed_positions = encoder.embed_positions
             self.layernorm_embedding = encoder.layernorm_embedding
             self.layers = nn.ModuleList(list(encoder.layers[:keep_layers]))
@@ -342,8 +392,7 @@ def export_one(args) -> None:
 
     # -- vision ------------------------------------------------------------------------
     if args.graph == "vision":
-        tower = model.vlm.vision_tower
-        projector = model.vlm.multi_modal_projector
+        _, tower, projector, _ = _vlm_parts(model.vlm)
         units: list[tuple[str, object]] = []
         for si, (conv, block) in enumerate(zip(tower.convs, tower.blocks)):
             units.append((f"conv{si}", conv))
@@ -370,10 +419,11 @@ def export_one(args) -> None:
 
     # -- text encoder ------------------------------------------------------------------
     elif args.graph == "text_encoder":
-        del model.vlm.vision_tower
+        _owner, _, _, _lm = _vlm_parts(model.vlm)
+        del _owner.vision_tower
         gc.collect()
         vlm = model.vlm
-        layers = list(vlm.language_model.encoder.layers)
+        layers = list(_lm.encoder.layers)
         embed_params = _n_params(vlm.get_input_embeddings())
 
         # The embedding table rides with the head chunk, so it eats into that budget.
@@ -462,6 +512,64 @@ def export_one(args) -> None:
 # ======================================================================================
 # parent: orchestrate one subprocess per graph family
 # ======================================================================================
+
+
+def _provenance(checkpoint: Path, opset: int) -> dict:
+    """Who built this bundle, from what, with which library versions.
+
+    X-VLA's split is budget-driven: change the budget, the transformers version or the
+    checkpoint and you get a different set of graphs that still loads. Without this
+    block a bundle cannot be told apart from another bundle after the fact, which
+    matters more here than on the SmolVLA side because this one is meant to be
+    published and re-downloaded by people who did not build it.
+    """
+    import subprocess
+
+    def _ver(mod):
+        try:
+            return __import__(mod).__version__
+        except Exception:
+            return None
+
+    try:
+        sha = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent),
+                              "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=5).stdout.strip() or None
+    except Exception:
+        sha = None
+
+    return {
+        "checkpoint": str(checkpoint),
+        "exported_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        "exporter_sha": sha,
+        "opset": opset,
+        "lerobot": _ver("lerobot"),
+        "torch": _ver("torch"),
+        "transformers": _ver("transformers"),
+    }
+
+
+def write_manifest(out: Path) -> int:
+    """sha256 of every bundle file, so a transfer can be verified on arrival.
+
+    Written last and excludes itself. Twelve graphs travel as .onnx + .onnx.data
+    pairs; a truncated external-data file fails minutes later at engine-build time
+    with an error that names neither the file nor the cause.
+    """
+    import hashlib
+
+    lines = []
+    for f in sorted(out.rglob("*")):
+        if not f.is_file() or f.name == "MANIFEST.sha256":
+            continue
+        h = hashlib.sha256()
+        with f.open("rb") as fh:
+            for block in iter(lambda: fh.read(1 << 20), b""):
+                h.update(block)
+        lines.append(f"{h.hexdigest()}  {f.relative_to(out)}")
+    (out / "MANIFEST.sha256").write_text("\n".join(lines) + "\n")
+    return len(lines)
+
 
 
 def main() -> None:
@@ -562,12 +670,20 @@ def main() -> None:
         "policy_splits": args.policy_splits,
         "budget_gb": args.budget_gb,
         "graphs": graphs,
+        "provenance": _provenance(args.checkpoint, args.opset),
     }
     (args.out_dir / "bundle.json").write_text(json.dumps(bundle, indent=2))
     total = sum(g["params"] for g in graphs)
     print(f"\n{len(graphs)} graphs, {total / 1e6:.1f}M params total")
     print(f"largest engine: {max(g['params'] for g in graphs) * 4 / 1e9:.2f} GB fp32")
     print(f"wrote {args.out_dir / 'bundle.json'}")
+    if missing:
+        print("skipping MANIFEST.sha256 — the bundle is incomplete "
+              f"(no graphs for {missing})")
+    else:
+        n = write_manifest(args.out_dir)
+        print(f"wrote {args.out_dir / 'MANIFEST.sha256'} ({n} files)\n"
+              f"  verify after transfer:  cd <bundle> && sha256sum -c MANIFEST.sha256")
 
 
 if __name__ == "__main__":
