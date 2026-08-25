@@ -132,14 +132,34 @@ Keep spherical harmonics at degree 3 when exporting. Lower SH export settings ca
 Requires `pxr` from Isaac Sim or Kit, plus `msgpack`. The helper auto-reruns with Isaac Sim `python.sh` when it can find it.
 
 ```bash
-python tools/usd_convert.py /path/to/my_scene/cleaned.ply /path/to/my_scene/scene.usdz
+python tools/usd_convert.py /path/to/my_scene/cleaned.ply /path/to/my_scene/scene.usdz --align
 ```
+
+Without `--align` the USDZ ships raw COLMAP world coordinates: an arbitrary origin
+near the camera centroid, Y-down axes, and an arbitrary scale — so the scene arrives
+in Isaac Sim tilted roughly 90 degrees despite the stage declaring `upAxis = Z`.
+
+`--align` rebuilds the frame from the COLMAP cameras in `sparse/0/` (found automatically
+next to the PLY) and writes it into the volume's transform op:
+
+- origin at the first image's camera centre
+- `+Z` from the mean camera up, so the ground is level
+- `+X` the first camera's viewing direction flattened to horizontal
+
+`--align-mode first-pose` takes origin *and* axes wholly from the first camera instead
+(inherits that frame's tilt); `--align-mode translate` only re-origins and leaves the
+COLMAP axes alone.
+
+COLMAP scale stays arbitrary — pass `--scale S` to get the scene into metres, since the
+stage declares `metersPerUnit = 1.0`.
 
 Import `scene.usdz` in Isaac Sim with `File > Import`.
 
 ## Environment Notes
 
-- Docker image: `3dgrut:spark-cuda130` by default.
+- Docker image: `3dgrut:spark-cuda130-v2` by default (3DGRUT 2.0.0).
+- Containers inherit the host timezone, so run directories and logs are stamped
+  in local time rather than UTC.
 - Requires NVIDIA Docker and `xhost +local:docker` for COLMAP GUI.
 - Video frames do not carry useful per-frame EXIF exposure, so training disables EXIF loading by default.
 - For large scenes, reduce `--frames`, `--max-width`, or `--iterations` first.

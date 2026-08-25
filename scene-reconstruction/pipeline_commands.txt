@@ -64,4 +64,12 @@ python tools/export_scene.py /path/to/my_scene
 # Important: keep SH degree at 3 in SuperSplat export.
 
 # 7. Convert the cleaned/compressed SuperSplat PLY to USDZ.
-python tools/usd_convert.py /path/to/my_scene/cleaned.ply /path/to/my_scene/scene.usdz
+python tools/usd_convert.py /path/to/my_scene/cleaned.ply /path/to/my_scene/scene.usdz --align
+#
+# --align re-origins the scene from the COLMAP cameras in sparse/0 (auto-found next to
+# the PLY): origin at the first image, +Z from the mean camera up so the ground is level,
+# +X the first camera's viewing direction. Without it the USDZ keeps COLMAP's arbitrary
+# Y-down gauge frame and lands tilted in Isaac Sim.
+#
+# Add --scale S to get into metres (COLMAP scale is arbitrary):
+# python tools/usd_convert.py /path/to/my_scene/cleaned.ply /path/to/my_scene/scene.usdz --align --scale 0.35

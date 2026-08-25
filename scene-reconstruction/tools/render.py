@@ -15,10 +15,31 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+
+
+def _tz_flags() -> list[str]:
+    """Docker flags that give the container the host's timezone.
+
+    Containers default to UTC, so without this 3DGRUT names its run directories
+    (models/<experiment>/data-DDMM_HHMMSS) and logs timestamps in UTC while the
+    filesystem and your shell show local time. Returns an empty list if the host
+    timezone cannot be determined, in which case the container stays on UTC.
+    """
+    tz = os.environ.get("TZ")
+    if not tz:
+        etc_timezone = Path("/etc/timezone")
+        if etc_timezone.is_file():
+            tz = etc_timezone.read_text().strip()
+    if not tz:
+        localtime = Path("/etc/localtime")
+        if localtime.is_symlink() and "zoneinfo/" in os.readlink(localtime):
+            tz = os.readlink(localtime).split("zoneinfo/", 1)[1]
+    return ["-e", f"TZ={tz}"] if tz else []
 
 
 def find_latest_checkpoint(models_dir: Path) -> Path | None:
@@ -75,8 +96,8 @@ def main() -> int:
         help="Skip PSNR/SSIM/LPIPS metric computation",
     )
     parser.add_argument(
-        "--image", default="3dgrut:spark-cuda130",
-        help="Docker image (default: 3dgrut:spark-cuda130)",
+        "--image", default="3dgrut:spark-cuda130-v2",
+        help="Docker image (default: 3dgrut:spark-cuda130-v2)",
     )
     args = parser.parse_args()
 
@@ -164,6 +185,7 @@ python render.py \\
 
     cmd = [
         "docker", "run", "--rm", "--gpus", "all",
+        *_tz_flags(),
         "--net=host", "--ipc=host",
         "-v", f"{workspace}:/data",
         "--runtime=nvidia",

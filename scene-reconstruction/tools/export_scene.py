@@ -12,14 +12,35 @@ Usage:
     python tools/export_scene.py /path/to/scene --out /path/to/scene/exports
     python tools/export_scene.py /path/to/scene --name living_room_raw.ply
     python tools/export_scene.py /path/to/scene --npz
-    python tools/export_scene.py /path/to/scene --image 3dgrut:spark-cuda130
+    python tools/export_scene.py /path/to/scene --image 3dgrut:spark-cuda130-v2
 """
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+
+def _tz_flags() -> list[str]:
+    """Docker flags that give the container the host's timezone.
+
+    Containers default to UTC, so without this 3DGRUT names its run directories
+    (models/<experiment>/data-DDMM_HHMMSS) and logs timestamps in UTC while the
+    filesystem and your shell show local time. Returns an empty list if the host
+    timezone cannot be determined, in which case the container stays on UTC.
+    """
+    tz = os.environ.get("TZ")
+    if not tz:
+        etc_timezone = Path("/etc/timezone")
+        if etc_timezone.is_file():
+            tz = etc_timezone.read_text().strip()
+    if not tz:
+        localtime = Path("/etc/localtime")
+        if localtime.is_symlink() and "zoneinfo/" in os.readlink(localtime):
+            tz = os.readlink(localtime).split("zoneinfo/", 1)[1]
+    return ["-e", f"TZ={tz}"] if tz else []
 
 
 def find_latest_checkpoint(models_dir: Path) -> Path | None:
@@ -77,8 +98,8 @@ def main() -> int:
         help="Output PLY filename (default: raw.ply)",
     )
     parser.add_argument(
-        "--image", default="3dgrut:spark-cuda130",
-        help="Docker image (default: 3dgrut:spark-cuda130)",
+        "--image", default="3dgrut:spark-cuda130-v2",
+        help="Docker image (default: 3dgrut:spark-cuda130-v2)",
     )
     parser.add_argument(
         "--npz", action="store_true",
@@ -198,6 +219,7 @@ PY
 
     cmd = [
         "docker", "run", "--rm", "--gpus", "all",
+        *_tz_flags(),
         "-v", f"{workspace}:/data",
         "--runtime=nvidia",
         args.image,

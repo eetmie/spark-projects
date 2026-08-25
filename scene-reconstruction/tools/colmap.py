@@ -54,12 +54,34 @@ COLMAP GUI sequential matching settings:
 from __future__ import annotations
 
 import argparse
+import os
 import hashlib
 import shutil
 import subprocess
 import sys
 import urllib.request
 from pathlib import Path
+
+
+def _tz_flags() -> list[str]:
+    """Docker flags that give the container the host's timezone.
+
+    Containers default to UTC, so without this 3DGRUT names its run directories
+    (models/<experiment>/data-DDMM_HHMMSS) and logs timestamps in UTC while the
+    filesystem and your shell show local time. Returns an empty list if the host
+    timezone cannot be determined, in which case the container stays on UTC.
+    """
+    tz = os.environ.get("TZ")
+    if not tz:
+        etc_timezone = Path("/etc/timezone")
+        if etc_timezone.is_file():
+            tz = etc_timezone.read_text().strip()
+    if not tz:
+        localtime = Path("/etc/localtime")
+        if localtime.is_symlink() and "zoneinfo/" in os.readlink(localtime):
+            tz = os.readlink(localtime).split("zoneinfo/", 1)[1]
+    return ["-e", f"TZ={tz}"] if tz else []
+
 
 FISHEYE_MODELS = {"OPENCV_FISHEYE", "RADIAL_FISHEYE", "SIMPLE_RADIAL_FISHEYE"}
 VOCAB_TREE_NAME = "vocab_tree.bin"
@@ -146,8 +168,8 @@ def main() -> int:
              "  2. python tools/colmap.py /scene --mapper-only --mapper global",
     )
     parser.add_argument(
-        "--image", default="3dgrut:spark-cuda130",
-        help="Docker image (default: 3dgrut:spark-cuda130)",
+        "--image", default="3dgrut:spark-cuda130-v2",
+        help="Docker image (default: 3dgrut:spark-cuda130-v2)",
     )
     args = parser.parse_args()
 
@@ -193,6 +215,7 @@ colmap vocab_tree_builder \
 """
     cmd = [
         "docker", "run", "--rm", "--gpus", "all",
+        *_tz_flags(),
         "-v", f"{workspace}:/data",
         "--runtime=nvidia",
         args.image,
@@ -300,6 +323,7 @@ fi"""
 
     cmd = [
         "docker", "run", "--rm", "-it", "--gpus", "all",
+        *_tz_flags(),
         "--net=host", "--ipc=host",
         "-e", f"DISPLAY={display}",
         "-e", "QT_X11_NO_MITSHM=1",
@@ -367,6 +391,7 @@ mkdir -p {sparse_container}
 
     cmd = [
         "docker", "run", "--rm", "--gpus", "all",
+        *_tz_flags(),
         "--net=host", "--ipc=host",
         "-v", f"{workspace}:/data",
         "--runtime=nvidia",
@@ -465,6 +490,7 @@ mkdir -p /data/images /data/sparse
 
     cmd = [
         "docker", "run", "--rm", "--gpus", "all",
+        *_tz_flags(),
         "--net=host", "--ipc=host",
         "-v", f"{workspace}:/data",
         "--runtime=nvidia",

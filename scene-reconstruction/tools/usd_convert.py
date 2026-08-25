@@ -7,6 +7,9 @@ the helper auto-reruns with Isaac Sim's python.sh when available.
 Usage:
     python tools/usd_convert.py /path/to/my_scene/cleaned.ply /path/to/my_scene/scene.usdz
     python tools/usd_convert.py cleaned.ply
+    python tools/usd_convert.py cleaned.ply --align
+    python tools/usd_convert.py cleaned.ply --align --scale 0.35
+    python tools/usd_convert.py cleaned.ply --align /path/to/my_scene --align-mode first-pose
 """
 from __future__ import annotations
 
@@ -278,6 +281,187 @@ def make_nurec_payload(positions, rotations, scales, densities, albedo, specular
     return buf.getvalue()
 
 
+# ── COLMAP alignment ──────────────────────────────────────────────────────────
+#
+# The PLY carries raw COLMAP world coordinates: an arbitrary gauge frame whose
+# origin lands near the camera centroid after COLMAP's bundle-adjustment
+# normalization, with axes inherited from the initial image pair. That frame is
+# Y-down, so a scene exported with an identity transform arrives in Isaac Sim
+# lying on its side, centred on nothing in particular, at an arbitrary scale.
+#
+# --align rebuilds a usable frame from the COLMAP cameras and writes it into the
+# NuRec volume's transform op. Keeping it in the xform op rather than baking it
+# into the points is what keeps view-dependent spherical harmonics valid: the
+# renderer carries view directions through the volume transform, so the SH
+# coefficients never need rotating.
+#
+# Note this reads the COLMAP model, not the PLY. If the scene was moved (rather
+# than only trimmed) inside SuperSplat, the camera frame no longer describes it.
+
+
+def _read_colmap_images_bin(path: Path):
+    import struct
+
+    import numpy as np
+
+    out = []
+    with path.open("rb") as f:
+        (count,) = struct.unpack("<Q", f.read(8))
+        for _ in range(count):
+            qw, qx, qy, qz, tx, ty, tz = struct.unpack("<idddddddi", f.read(64))[1:8]
+            name = b""
+            while True:
+                c = f.read(1)
+                if c in (b"\x00", b""):
+                    break
+                name += c
+            (n_pts,) = struct.unpack("<Q", f.read(8))
+            f.seek(24 * n_pts, os.SEEK_CUR)
+            out.append((
+                name.decode("utf-8", "replace"),
+                np.array([qw, qx, qy, qz], dtype=np.float64),
+                np.array([tx, ty, tz], dtype=np.float64),
+            ))
+    return out
+
+
+def _read_colmap_images_txt(path: Path):
+    import numpy as np
+
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        lines = [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
+
+    # images.txt alternates a pose line with a POINTS2D line; keep the pose lines.
+    out = []
+    for line in lines[0::2]:
+        parts = line.split()
+        if len(parts) < 10:
+            continue
+        vals = [float(v) for v in parts[1:8]]
+        out.append((
+            parts[9],
+            np.array(vals[:4], dtype=np.float64),
+            np.array(vals[4:], dtype=np.float64),
+        ))
+    return out
+
+
+def read_colmap_images(model_path: Path):
+    """Camera poses from a COLMAP model, sorted by image name (3DGRUT's order)."""
+    candidates = [model_path] if model_path.is_file() else [
+        model_path / "images.bin", model_path / "images.txt"
+    ]
+    for cand in candidates:
+        if not cand.is_file():
+            continue
+        reader = _read_colmap_images_bin if cand.suffix == ".bin" else _read_colmap_images_txt
+        images = reader(cand)
+        if images:
+            return sorted(images, key=lambda row: row[0]), cand
+    raise FileNotFoundError(f"no images.bin / images.txt with poses under {model_path}")
+
+
+_MODEL_SUBDIRS = (Path("sparse/0"), Path("sparse"), Path("0"), Path("."))
+
+
+def _has_model(base: Path) -> bool:
+    return (base / "images.bin").is_file() or (base / "images.txt").is_file()
+
+
+def find_colmap_model(hint: str, ply: Path) -> Path:
+    """Locate the COLMAP model. 'auto' searches around the PLY."""
+    if hint != "auto":
+        given = Path(hint).expanduser().resolve()
+        if given.is_file():
+            return given
+        for sub in _MODEL_SUBDIRS:
+            if _has_model(given / sub):
+                return (given / sub).resolve()
+        raise FileNotFoundError(f"no COLMAP model found under {given}")
+
+    for base in (ply.parent, ply.parent.parent):
+        for sub in _MODEL_SUBDIRS:
+            if _has_model(base / sub):
+                return (base / sub).resolve()
+    raise FileNotFoundError(
+        f"--align found no sparse/0/images.bin near {ply.parent}; "
+        "pass the workspace explicitly, e.g. --align /path/to/my_scene"
+    )
+
+
+def qvec_to_rotmat(q):
+    import numpy as np
+
+    w, x, y, z = q / np.linalg.norm(q)
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z),     2 * (x * z + w * y)],
+        [2 * (x * y + w * z),     1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y),     2 * (y * z + w * x),     1 - 2 * (x * x + y * y)],
+    ])
+
+
+def compute_alignment(images, mode: str, scale: float):
+    """COLMAP-world -> USD-world 4x4, column-vector convention (p' = M @ p).
+
+    Output frame is robotics-style: +X the viewing direction, +Y left, +Z up.
+    """
+    import numpy as np
+
+    centers, rights, downs, fronts = [], [], [], []
+    for _name, q, t in images:
+        R = qvec_to_rotmat(q)          # world-to-camera rotation
+        c2w = R.T                      # columns are the camera axes in world space
+        centers.append(-c2w @ t)
+        rights.append(c2w[:, 0])
+        downs.append(c2w[:, 1])
+        fronts.append(c2w[:, 2])
+    centers, rights = np.stack(centers), np.stack(rights)
+    downs, fronts = np.stack(downs), np.stack(fronts)
+
+    origin = centers[0]
+    first_up = -downs[0]
+    up_used = None
+
+    if mode == "translate":
+        basis = np.eye(3)
+    elif mode == "first-pose":
+        basis = np.stack([fronts[0], -rights[0], first_up])
+        up_used = first_up
+    else:  # gravity
+        up = (-downs).mean(axis=0)
+        norm = float(np.linalg.norm(up))
+        if norm < 1e-6:
+            raise RuntimeError(
+                "camera up vectors cancel out (no consistent gravity); try --align-mode first-pose"
+            )
+        up /= norm
+        fwd = fronts[0] - np.dot(fronts[0], up) * up
+        if np.linalg.norm(fwd) < 1e-6:      # first camera pointing straight up/down
+            fwd = rights[0] - np.dot(rights[0], up) * up
+        fwd /= np.linalg.norm(fwd)
+        basis = np.stack([fwd, np.cross(up, fwd), up])
+        up_used = up
+
+    matrix = np.eye(4)
+    matrix[:3, :3] = scale * basis
+    matrix[:3, 3] = -scale * (basis @ origin)
+    return matrix, {
+        "n_images": len(images),
+        "first_image": images[0][0],
+        "origin": origin,
+        "up": up_used,
+        "first_up": first_up,
+    }
+
+
+def scale_only_matrix(scale: float):
+    import numpy as np
+
+    matrix = np.eye(4)
+    matrix[:3, :3] *= scale
+    return matrix
+
+
 def init_stage(up="Z"):
     from pxr import Usd, UsdGeom
     stage = Usd.Stage.CreateInMemory()
@@ -298,7 +482,7 @@ def stage_bytes(stage):
     return data
 
 
-def make_layers(model_filename, positions):
+def make_layers(model_filename, positions, transform=None):
     from pxr import Gf, Sdf, UsdVol
     import numpy as np
 
@@ -319,7 +503,12 @@ def make_layers(model_filename, positions):
     })
     volume = UsdVol.Volume.Define(gauss_stage, "/World/gauss")
     prim = volume.GetPrim()
-    volume.AddTransformOp().Set(Gf.Matrix4d(1.0))
+    if transform is None:
+        volume.AddTransformOp().Set(Gf.Matrix4d(1.0))
+    else:
+        # Gf matrices are row-major with a row-vector convention (p' = p * M),
+        # so the column-vector 4x4 is transposed on the way in.
+        volume.AddTransformOp().Set(Gf.Matrix4d(*transform.T.flatten().tolist()))
     prim.CreateAttribute("omni:nurec:isNuRecVolume", Sdf.ValueTypeNames.Bool).Set(True)
     prim.CreateAttribute("omni:nurec:useProxyTransform", Sdf.ValueTypeNames.Bool).Set(False)
 
@@ -346,7 +535,12 @@ def make_layers(model_filename, positions):
     prim.GetRelationship("proxy") if prim.HasRelationship("proxy") else prim.CreateRelationship("proxy")
 
     default_stage = init_stage("Z")
-    default_stage.OverridePrim("/World/gauss").GetReferences().AddReference("gauss.usda")
+    # Target the Volume prim explicitly. Without a prim path the reference resolves to
+    # gauss.usda's defaultPrim (/World), which drags the whole subtree in one level deep
+    # and lands the volume at /World/gauss/gauss.
+    default_stage.OverridePrim("/World/gauss").GetReferences().AddReference(
+        "gauss.usda", Sdf.Path("/World/gauss")
+    )
     settings = gauss_stage.GetRootLayer().customLayerData.get("renderSettings")
     if settings:
         default_stage.SetMetadataByDictKey("customLayerData", "renderSettings", settings)
@@ -364,6 +558,24 @@ def main() -> int:
     parser.add_argument(
         "output", nargs="?",
         help="Output USDZ path (default: same directory as PLY with .usdz extension)",
+    )
+    parser.add_argument(
+        "--align", nargs="?", const="auto", metavar="PATH",
+        help="Re-origin the scene from the COLMAP cameras instead of shipping the raw "
+             "COLMAP gauge frame. With no value, looks for sparse/0/ beside the PLY; "
+             "otherwise pass the workspace, the model dir, or an images.bin/.txt path.",
+    )
+    parser.add_argument(
+        "--align-mode", choices=["gravity", "first-pose", "translate"], default="gravity",
+        help="gravity (default): origin at the first camera, +Z the mean camera up so the "
+             "ground is level, +X the first camera's forward flattened to horizontal. "
+             "first-pose: origin and axes taken wholly from the first camera. "
+             "translate: origin at the first camera, COLMAP axes untouched.",
+    )
+    parser.add_argument(
+        "--scale", type=float, default=1.0, metavar="S",
+        help="Uniform scale. COLMAP scale is arbitrary while the stage declares "
+             "metersPerUnit 1.0, so pass the factor that puts the scene into metres.",
     )
     parser.add_argument(
         "--extract-sidecars", action="store_true",
@@ -386,9 +598,45 @@ def main() -> int:
     if sh_degree != 3:
         print("Warning  : expected SH degree 3 for the SuperSplat-cleaned pipeline")
 
+    import numpy as np
+
+    transform = None
+    if args.align is not None:
+        try:
+            model_path = find_colmap_model(args.align, ply)
+            images, model_file = read_colmap_images(model_path)
+            transform, info = compute_alignment(images, args.align_mode, args.scale)
+        except (FileNotFoundError, RuntimeError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+        print(f"Align    : {model_file}  ({info['n_images']} cameras, mode={args.align_mode})")
+        print(f"           origin at {info['first_image']}, COLMAP xyz "
+              f"{np.round(info['origin'], 4).tolist()}")
+        if info["up"] is not None:
+            tilt = np.degrees(np.arccos(np.clip(float(info["first_up"] @ info["up"]), -1.0, 1.0)))
+            print(f"           up axis {np.round(info['up'], 4).tolist()}  "
+                  f"(first image {tilt:.1f} deg off it)")
+            if tilt > 15.0:
+                print("Warning  : the first image is well off the mean up; "
+                      "check the horizon in Isaac Sim.")
+        corners = np.array([[x, y, z]
+                            for x in (positions[:, 0].min(), positions[:, 0].max())
+                            for y in (positions[:, 1].min(), positions[:, 1].max())
+                            for z in (positions[:, 2].min(), positions[:, 2].max())])
+        moved = corners @ transform[:3, :3].T + transform[:3, 3]
+        print(f"           scene spans {np.round(moved.max(0) - moved.min(0), 3).tolist()} units "
+              f"at scale {args.scale}")
+    elif args.scale != 1.0:
+        transform = scale_only_matrix(args.scale)
+        print(f"Scale    : {args.scale} (no --align, so the COLMAP frame is kept)")
+    else:
+        print("Note     : no --align, so the stage keeps COLMAP's frame while declaring "
+              "upAxis Z; expect the scene to arrive tilted in Isaac Sim.")
+
     print("Building NuRec payload...")
     model_bytes = make_nurec_payload(positions, rotations, scales, densities, albedo, specular, sh_degree)
-    default_stage, gauss_stage = make_layers(model_filename, positions)
+    default_stage, gauss_stage = make_layers(model_filename, positions, transform)
 
     with zipfile.ZipFile(output_usdz, "w", compression=zipfile.ZIP_STORED) as z:
         z.writestr("default.usda", stage_bytes(default_stage))
