@@ -30,7 +30,11 @@ set -- "${args[@]}"
 BUNDLE="${1:?usage: ship_bundle.sh <bundle-dir> <ssh-host> [remote-name] [--allow-base]}"
 HOST="${2:?usage: ship_bundle.sh <bundle-dir> <ssh-host> [remote-name] [--allow-base]}"
 NAME="${3:-$(basename "$BUNDLE")}"
-REMOTE_ROOT="${REMOTE_ROOT:-\$HOME/bundles}"
+# Relative to the remote home on purpose: rsync does NOT expand $HOME in a remote
+# path (it quotes it), so an absolute-looking "$HOME/bundles" arrives literally and
+# rsync cheerfully makes a directory called '$HOME'. A relative path is resolved by
+# the remote shell against the login home, which is what we actually want.
+REMOTE_ROOT="${REMOTE_ROOT:-bundles}"
 
 BUNDLE="${BUNDLE%/}"
 [ -d "$BUNDLE" ] || { echo "!! no such bundle: $BUNDLE" >&2; exit 1; }

@@ -59,6 +59,28 @@ def report(name: str, ref: np.ndarray, got: np.ndarray, threshold: float) -> boo
 # ======================================================================================
 
 
+# The reference npz is a cache: emitting it costs ~3.5 GB of PyTorch and a couple of
+# minutes, so it is written once and reused. Reuse is only valid for a bundle that
+# would have produced the SAME reference, and nothing used to check that -- a reference
+# emitted for a 1-view bundle was silently loaded against a 3-view one. That case
+# happened to die on a shape mismatch inside ORT, which was luck: a bundle differing
+# only in something shape-preserving (a different domain_id, a different seed, a
+# different instruction) would have compared clean numbers against the wrong reference
+# and printed a PASS that meant nothing. Stamp the inputs into the file and refuse to
+# reuse it when they differ.
+REFERENCE_SIGNATURE_KEYS = ("valid_views", "chunk_size", "lang_len", "max_state_dim",
+                            "domain_id", "num_denoising_steps")
+
+
+def _reference_signature(bundle: dict, args) -> dict:
+    sig = {k: bundle.get(k) for k in REFERENCE_SIGNATURE_KEYS}
+    if args.steps is not None:            # --steps overrides the bundle's own count
+        sig["num_denoising_steps"] = args.steps
+    sig["seed"] = args.seed
+    sig["instruction"] = args.instruction
+    return sig
+
+
 def emit_reference(args) -> None:
     import torch
 
@@ -144,6 +166,7 @@ def emit_reference(args) -> None:
     args.reference.parent.mkdir(parents=True, exist_ok=True)
     np.savez(
         args.reference,
+        signature=np.array(json.dumps(_reference_signature(bundle, args))),
         images=np.stack(images), state=state, x1=x1, steps=np.array(steps),
         instruction=np.array(args.instruction),
         vlm_features=enc["vlm_features"].numpy(),
@@ -163,6 +186,23 @@ def compare(args) -> int:
     from xvla_runtime.split_ort import XVLASplitPolicy
 
     ref = np.load(args.reference, allow_pickle=False)
+
+    bundle = json.loads((args.split_dir / "bundle.json").read_text())
+    want = _reference_signature(bundle, args)
+    got = json.loads(str(ref["signature"])) if "signature" in ref.files else None
+    if got != want:
+        if got is None:
+            detail = "it predates signature stamping"
+        else:
+            diff = [f"{k}: reference {got.get(k)!r} vs bundle {v!r}"
+                    for k, v in want.items() if got.get(k) != v]
+            detail = "; ".join(diff) or "unknown difference"
+        sys.exit(
+            f"reference {args.reference} does not match {args.split_dir}\n"
+            f"  {detail}\n"
+            f"  Re-emit it for this bundle:  --refresh-reference\n"
+            f"  (or keep one per bundle with --reference <path>)")
+
     images = [img for img in ref["images"]]
     instruction = str(ref["instruction"])
     steps = int(ref["steps"])

@@ -560,7 +560,12 @@ def write_manifest(out: Path) -> int:
 
     lines = []
     for f in sorted(out.rglob("*")):
-        if not f.is_file() or f.name == "MANIFEST.sha256":
+        # `_meta_*.json` are exporter scratch — one per graph family, used only to
+        # rebuild bundle.json on a partial re-export — and ship_bundle.sh excludes
+        # them from the transfer. A manifest must describe the bundle AS SHIPPED, or
+        # verification on the target fails on files that were never meant to travel.
+        if (not f.is_file() or f.name == "MANIFEST.sha256"
+                or (f.name.startswith("_meta_") and f.suffix == ".json")):
             continue
         h = hashlib.sha256()
         with f.open("rb") as fh:
