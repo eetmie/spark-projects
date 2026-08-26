@@ -325,6 +325,12 @@ def main() -> None:
                          "the Orin runtime otherwise has to guess it.")
     ap.add_argument("--task", default=None,
                     help="the instruction string. Auto-resolved from the training dataset.")
+    ap.add_argument("--cam-slots", type=int, default=1,
+                    help="camera SLOTS to size the prefix for. The vision graph stays "
+                         "batch-1 (the runtime calls it once per real camera), but "
+                         "prefill/decode bake in a static prefix length, so a bundle "
+                         "exported at 1 slot cannot serve a 2-slot runtime. The public "
+                         "ainekko/smolvla_base_onnx export is 2 (prefix 177).")
     ap.add_argument("--state-blind", action="store_true",
                     help="camera-only checkpoint: the state input is dead but still wired "
                          "in, and MUST be fed zeros. run_inference reads this flag.")
@@ -357,8 +363,13 @@ def main() -> None:
         # derive the real prefix length from a single image + padded lang + state
         n_img = vlme.embed_image(torch.zeros(1, 3, img_h, img_w, device=dev)).shape[1]
         lang_len = cfg.tokenizer_max_length
-        prefix_len = n_img + lang_len + 1                    # +1 state token = 113
+        # One image-token block per SLOT, not per real camera: an unused slot still
+        # occupies its tokens in the prefix, and prefill/decode are traced at a static
+        # length. 1 slot -> 64+48+1 = 113; 2 slots -> 128+48+1 = 177, which is what the
+        # published ainekko export carries.
+        prefix_len = args.cam_slots * n_img + lang_len + 1
         print(f"dims: L={L} vlm_dim={vlm_dim} exp_dim={exp_dim} prefix_len={prefix_len} "
+              f"(cam_slots={args.cam_slots} x {n_img} img + {lang_len} lang + 1 state) "
               f"chunk={chunk} act_dim={act_dim}")
 
         # 1) vision
@@ -467,7 +478,7 @@ def main() -> None:
         # the prefix, so a consumer has to pad to the same count or compute a
         # different-length sequence. Derived from the prefix this export actually
         # built (1 here; the published ainekko export is 2, prefix 177).
-        "n_cam_slots": int((prefix_len - lang_len - 1) // n_img),
+        "n_cam_slots": int(args.cam_slots),
         "image_size": [int(img_h), int(img_w)],
         "lang_len": int(lang_len),
         "prefix_len": int(prefix_len),
