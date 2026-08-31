@@ -32,6 +32,9 @@ import numpy as np
 REPO = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO))
 
+from xvla_runtime.bundle_contract import (normalize_vector, tree_sha256,
+                                          unnormalize_vector, verify_bundle)
+
 LOG = logging.getLogger("parity")
 
 
@@ -68,14 +71,19 @@ def report(name: str, ref: np.ndarray, got: np.ndarray, threshold: float) -> boo
 # different instruction) would have compared clean numbers against the wrong reference
 # and printed a PASS that meant nothing. Stamp the inputs into the file and refuse to
 # reuse it when they differ.
-REFERENCE_SIGNATURE_KEYS = ("valid_views", "chunk_size", "lang_len", "max_state_dim",
-                            "domain_id", "num_denoising_steps")
+REFERENCE_SIGNATURE_KEYS = (
+    "valid_views", "chunk_size", "lang_len", "max_state_dim", "max_action_dim",
+    "real_state_dim", "real_action_dim", "domain_id", "num_denoising_steps",
+)
 
 
 def _reference_signature(bundle: dict, args) -> dict:
     sig = {k: bundle.get(k) for k in REFERENCE_SIGNATURE_KEYS}
     if args.steps is not None:            # --steps overrides the bundle's own count
         sig["num_denoising_steps"] = args.steps
+    sig["checkpoint_tree_sha256"] = (bundle.get("checkpoint") or {}).get("tree_sha256")
+    sig["processor_artifacts"] = (bundle.get("processor_contract") or {}).get("artifacts")
+    sig["tokenizer_tree_sha256"] = (bundle.get("tokenizer") or {}).get("tree_sha256")
     sig["seed"] = args.seed
     sig["instruction"] = args.instruction
     return sig
@@ -88,14 +96,20 @@ def emit_reference(args) -> None:
 
     from xvla_runtime.split_ort import preprocess_image
 
-    bundle = json.loads((args.split_dir / "bundle.json").read_text())
+    bundle = verify_bundle(args.split_dir, verify_manifest=True)
+    expected_checkpoint_sha = (bundle.get("checkpoint") or {}).get("tree_sha256")
+    if tree_sha256(args.checkpoint) != expected_checkpoint_sha:
+        raise ValueError("PyTorch checkpoint does not match bundle identity")
+    contract = bundle.get("processor_contract")
     rng = np.random.default_rng(args.seed)
     n_views = bundle["valid_views"]
     chunk_size = bundle["chunk_size"]
     lang_len = bundle["lang_len"]
 
     images = [rng.integers(0, 256, (480, 640, 3), dtype=np.uint8) for _ in range(n_views)]
-    state = rng.standard_normal(bundle["max_state_dim"]).astype(np.float32)
+    state_dim = int((contract or {}).get("state", {}).get(
+        "dim", bundle["max_state_dim"]))
+    state = rng.standard_normal(state_dim).astype(np.float32)
 
     LOG.info("loading PyTorch reference (CPU, ~3.5 GB) ...")
     # The checkpoint's config says device=cuda and from_pretrained honours it; the sample
@@ -123,13 +137,22 @@ def emit_reference(args) -> None:
 
     from transformers import AutoTokenizer
 
-    tok = AutoTokenizer.from_pretrained(args.tokenizer)(
+    tokenizer_path = (Path(args.tokenizer) if args.tokenizer
+                      else args.split_dir / bundle["tokenizer"]["path"])
+    if bundle.get("schema_version", 1) >= 2:
+        expected_tokenizer_sha = bundle["tokenizer"]["tree_sha256"]
+        if tree_sha256(tokenizer_path) != expected_tokenizer_sha:
+            raise ValueError("reference tokenizer does not match bundle identity")
+    tok = AutoTokenizer.from_pretrained(
+        str(tokenizer_path), local_files_only=bundle.get("schema_version", 1) >= 2
+    )(
         args.instruction, max_length=lang_len, padding="max_length",
         truncation=True, padding_side="right", return_tensors="pt",
     )
     domain_id = torch.tensor([bundle["domain_id"]], dtype=torch.long)
     proprio = torch.zeros(1, model.dim_proprio)
-    proprio[0, : len(state)] = torch.from_numpy(state[: model.dim_proprio])
+    model_state = normalize_vector(state, contract["state"]) if contract else state
+    proprio[0, : len(model_state)] = torch.from_numpy(model_state)
 
     with torch.no_grad():
         enc = model.forward_vlm(tok["input_ids"], image_input, image_mask)
@@ -143,25 +166,24 @@ def emit_reference(args) -> None:
         )
         cond = cond + model.transformer.pos_emb[:, n_act : n_act + cond.shape[1]]
 
-    steps = args.steps or bundle["num_denoising_steps"]
-    real_randn = torch.randn
-    target = (1, chunk_size, model.dim_action)
-
-    def fixed_randn(*a, **kw):
-        shape = tuple(a[0]) if len(a) == 1 and not isinstance(a[0], int) else tuple(a)
-        if shape == target:
-            return torch.from_numpy(x1)
-        return real_randn(*a, **kw)
-
-    torch.randn = fixed_randn
-    try:
-        with torch.no_grad():
-            action = model.generate_actions(
-                input_ids=tok["input_ids"], image_input=image_input,
-                image_mask=image_mask, domain_id=domain_id, proprio=proprio, steps=steps,
+    steps = (args.steps if args.steps is not None else bundle["num_denoising_steps"])
+    x1_tensor = torch.from_numpy(x1)
+    action_model = torch.zeros_like(x1_tensor)
+    with torch.no_grad():
+        for i in range(steps, 0, -1):
+            t = torch.full((1,), i / steps, dtype=x1_tensor.dtype)
+            x_t = x1_tensor * t.view(-1, 1, 1) + action_model * (
+                1 - t).view(-1, 1, 1)
+            proprio_m, x_t_m = model.action_space.preprocess(proprio, x_t)
+            action_model = model.transformer(
+                domain_id=domain_id, action_with_noise=x_t_m, proprio=proprio_m,
+                t=t, **enc,
             )
-    finally:
-        torch.randn = real_randn
+        normalized = model.action_space.postprocess(action_model)
+
+    normalized_action = normalized[0].numpy()
+    physical_action = (unnormalize_vector(normalized_action, contract["action"])
+                       if contract else normalized_action)
 
     args.reference.parent.mkdir(parents=True, exist_ok=True)
     np.savez(
@@ -171,8 +193,8 @@ def emit_reference(args) -> None:
         instruction=np.array(args.instruction),
         vlm_features=enc["vlm_features"].numpy(),
         aux_visual=enc["aux_visual_inputs"].numpy(),
-        cond_tokens=cond.numpy(),
-        action=action[0].numpy(),
+        cond_tokens=cond.numpy(), model_action=action_model[0].numpy(),
+        normalized_action=normalized_action, action=physical_action,
     )
     LOG.info("wrote %s", args.reference)
 
@@ -187,7 +209,7 @@ def compare(args) -> int:
 
     ref = np.load(args.reference, allow_pickle=False)
 
-    bundle = json.loads((args.split_dir / "bundle.json").read_text())
+    bundle = verify_bundle(args.split_dir, verify_manifest=True)
     want = _reference_signature(bundle, args)
     got = json.loads(str(ref["signature"])) if "signature" in ref.files else None
     if got != want:
@@ -222,7 +244,14 @@ def compare(args) -> int:
     ok &= report("cond_tokens", ref["cond_tokens"], cond_got, args.threshold)
 
     action_got = policy.sample_actions(images, instruction, ref["state"], x1=ref["x1"])
-    ok &= report("action", ref["action"], action_got, args.threshold)
+    if "model_action" in ref.files:
+        ok &= report("model action 20D", ref["model_action"],
+                     policy.last_model_action[0], args.threshold)
+    if "normalized_action" in ref.files:
+        ok &= report(
+            "normalized", ref["normalized_action"], policy.last_normalized_action[0],
+            args.threshold)
+    ok &= report("physical action", ref["action"], action_got, args.threshold)
 
     t = policy.last_timings
     print(f"\n  timings: vision {t.get('vision_ms', 0):.0f} ms, text {t.get('text_ms', 0):.0f} ms, "
@@ -237,7 +266,8 @@ def main() -> None:
     ap.add_argument("--split-dir", type=Path, default=REPO / "exports" / "split")
     ap.add_argument("--checkpoint", type=Path, default=REPO / "models" / "xvla-base")
     ap.add_argument("--reference", type=Path, default=REPO / "exports" / "parity_reference.npz")
-    ap.add_argument("--tokenizer", default=str(REPO / "models" / "tokenizer"))
+    ap.add_argument("--tokenizer", default=None,
+                    help="override tokenizer directory; schema-v2 requires an exact hash match")
     ap.add_argument("--cache-dir", default=None,
                     help="TRT engine cache; defaults to <split-dir>/trt_cache")
     ap.add_argument("--precision", default="fp16", choices=["fp16", "fp32"])
@@ -250,6 +280,8 @@ def main() -> None:
     ap.add_argument("--_emit-reference", dest="emit", action="store_true",
                     help=argparse.SUPPRESS)
     args = ap.parse_args()
+    if args.steps is not None and args.steps <= 0:
+        ap.error("--steps must be positive")
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -261,8 +293,10 @@ def main() -> None:
         LOG.info("running reference phase in a separate process ...")
         cmd = [sys.executable, __file__, "--_emit-reference",
                "--split-dir", str(args.split_dir), "--checkpoint", str(args.checkpoint),
-               "--reference", str(args.reference), "--tokenizer", args.tokenizer,
-               "--instruction", args.instruction, "--seed", str(args.seed)]
+               "--reference", str(args.reference), "--instruction", args.instruction,
+               "--seed", str(args.seed)]
+        if args.tokenizer:
+            cmd += ["--tokenizer", args.tokenizer]
         if args.steps:
             cmd += ["--steps", str(args.steps)]
         if subprocess.run(cmd, text=True).returncode != 0:

@@ -45,6 +45,16 @@ def pct(values: list[float], p: float) -> float:
     return float(np.percentile(values, p)) if values else float("nan")
 
 
+def validate_runtime_args(duration_s: float, steps: int | None,
+                          report_every: float) -> None:
+    if duration_s <= 0:
+        raise ValueError(f"duration-s must be positive, got {duration_s}")
+    if steps is not None and steps <= 0:
+        raise ValueError(f"steps must be positive, got {steps}")
+    if report_every < 0:
+        raise ValueError(f"report-every must be non-negative, got {report_every}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--split-dir", type=Path, default=Path("exports/split"))
@@ -60,6 +70,8 @@ def main() -> None:
     ap.add_argument("--duration-s", type=float, default=30.0)
     ap.add_argument("--steps", type=int, default=None,
                     help="override num_denoising_steps (the main latency lever)")
+    ap.add_argument("--device-resident-denoise", action="store_true",
+                    help="keep denoiser conditioning and split intermediates on CUDA")
     ap.add_argument("--report-every", type=float, default=0.0,
                     help="seconds between memory/latency lines; 0 = only at the end")
     ap.add_argument("--prebuild", action="store_true",
@@ -67,6 +79,10 @@ def main() -> None:
                          "cold cache -- building inside the runtime process risks OOM)")
     ap.add_argument("--show-actions", action="store_true")
     args = ap.parse_args()
+    try:
+        validate_runtime_args(args.duration_s, args.steps, args.report_every)
+    except ValueError as exc:
+        ap.error(str(exc))
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
                         datefmt="%H:%M:%S")
@@ -92,6 +108,7 @@ def main() -> None:
     policy = XVLASplitPolicy(
         args.split_dir, cache_dir=args.cache_dir, precision=args.precision,
         tokenizer_dir=tokenizer, num_denoising_steps=args.steps,
+        device_resident_denoise=args.device_resident_denoise,
     )
     load_s = time.time() - t0
     after_load = meminfo_available_gb()

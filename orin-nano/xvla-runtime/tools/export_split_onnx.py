@@ -31,6 +31,11 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+from xvla_runtime.bundle_contract import (SCHEMA_VERSION, build_processor_contract,
+                                          copy_processor_artifacts,
+                                          materialize_tokenizer, tree_sha256)
 
 GRAPHS = ("vision", "text_encoder", "cond", "denoise")
 
@@ -238,20 +243,25 @@ def _build_wrappers():
     class DenoiseGraph(nn.Module):
         """One slice of the hot path, run once per denoising step.
 
-        `first` slices take (x_t, t, proprio, cond_tokens) and assemble the sequence;
+        `first` slices normally take (x_t, t, proprio, cond_tokens) and assemble the
+        sequence. With `fuse_interpolation`, they instead take
+        (x1, action, t, proprio, cond_tokens) and form the exact X-VLA interpolation on
+        device;
         `last` slices apply the final norm + action decoder. `domain_id` is baked: the
         DomainAwareLinear weights and the soft prompts are gathered at export time and
         become constants, so the 30-domain tables never enter an engine.
         """
 
         def __init__(self, transformer, action_space, blocks, *, first, last, domain_id,
-                     dim_time, n_action, dim_action=None, dim_proprio=None):
+                     dim_time, n_action, dim_action=None, dim_proprio=None,
+                     fuse_interpolation=False):
             super().__init__()
             self.blocks = blocks
             self.first = first
             self.last = last
             self.dim_time = dim_time
             self.n_action = n_action
+            self.fuse_interpolation = bool(fuse_interpolation)
 
             did = torch.tensor([domain_id], dtype=torch.long)
             if first:
@@ -261,7 +271,9 @@ def _build_wrappers():
                 # that into Add/Expand nodes with empty input names, producing an ONNX
                 # file that loads nowhere ("input 0 is marked single but has an empty
                 # string"). Shapes are static, so a constant mask is equivalent.
-                gripper_idx = list(action_space.gripper_idx)
+                # AutoActionSpace has no grippers: it only pads real axes to the model
+                # width and trims them after inference, so the correct mask is all ones.
+                gripper_idx = list(getattr(action_space, "gripper_idx", ()))
                 amask = torch.ones(1, 1, dim_action)
                 amask[..., gripper_idx] = 0.0
                 self.register_buffer("action_mask", amask)
@@ -294,7 +306,12 @@ def _build_wrappers():
 
         def forward(self, *args):
             if self.first:
-                x_t, t, proprio, cond_tokens = args
+                if self.fuse_interpolation:
+                    x1, action, t, proprio, cond_tokens = args
+                    weight = t.view(-1, 1, 1)
+                    x_t = x1 * weight + action * (1.0 - weight)
+                else:
+                    x_t, t, proprio, cond_tokens = args
                 x_t = x_t * self.action_mask
                 proprio = proprio * self.proprio_mask
 
@@ -489,23 +506,44 @@ def export_one(args) -> None:
                 first=first_c, last=last_c, domain_id=args.domain_id,
                 dim_time=cfg.dim_time, n_action=cfg.chunk_size,
                 dim_action=model.dim_action, dim_proprio=model.dim_proprio,
+                fuse_interpolation=args.fuse_denoise_interpolation,
             )
             stem = "denoise" if len(splits) == 1 else f"denoise_{i}"
             if first_c:
-                sample = (
-                    torch.zeros(1, cfg.chunk_size, model.dim_action),
-                    torch.zeros(1),
-                    torch.zeros(1, model.dim_proprio),
+                action_sample = torch.zeros(1, cfg.chunk_size, model.dim_action)
+                common_sample = (
+                    torch.zeros(1), torch.zeros(1, model.dim_proprio),
                     torch.zeros(1, n_cond, hidden),
                 )
-                names_in = ["x_t", "t", "proprio", "cond_tokens"]
+                if args.fuse_denoise_interpolation:
+                    sample = (action_sample, action_sample, *common_sample)
+                    names_in = ["x1", "action", "t", "proprio", "cond_tokens"]
+                else:
+                    sample = (action_sample, *common_sample)
+                    names_in = ["x_t", "t", "proprio", "cond_tokens"]
             else:
                 sample = (torch.zeros(1, seq_len, hidden),)
                 names_in = ["hidden_in"]
             dump(dg, sample, names_in, ["action"] if last_c else ["hidden_out"], stem)
+        meta["denoise_input_mode"] = (
+            "fused_interpolation" if args.fuse_denoise_interpolation else "x_t")
 
+    graph_identity = {
+        "checkpoint_tree_sha256": args.checkpoint_sha,
+        "random_init": bool(args.random_init),
+        "domain_id": args.domain_id,
+        "valid_views": args.valid_views,
+        "lang_len": args.lang_len,
+        "num_image_views": n_views,
+        "chunk_size": cfg.chunk_size,
+        "max_state_dim": model.dim_proprio,
+        "max_action_dim": model.dim_action,
+        "opset": args.opset,
+        "budget_gb": args.budget_gb,
+        "policy_splits": args.policy_splits,
+    }
     (out_dir / f"_meta_{args.graph}.json").write_text(
-        json.dumps({"graphs": exported, **meta}, indent=2)
+        json.dumps({"graphs": exported, "identity": graph_identity, **meta}, indent=2)
     )
 
 
@@ -587,8 +625,10 @@ def main() -> None:
                     help="static batch of the vision engine; defaults to num_image_views. "
                          "Set to the number of REAL cameras -- padded views are zeroed by "
                          "the runtime and never need a forward pass.")
-    ap.add_argument("--lang-len", type=int, default=50,
-                    help="language tokens; 50 comes from the checkpoint's policy_preprocessor.json")
+    ap.add_argument("--lang-len", type=int, default=None,
+                    help="language tokens; defaults to the saved policy preprocessor")
+    ap.add_argument("--tokenizer", default=None,
+                    help="tokenizer path/id; defaults to the saved policy preprocessor")
     ap.add_argument("--budget-gb", type=float, default=DEFAULT_BUDGET_GB,
                     help="FP32 weight budget per engine (see notes/split_design.md)")
     ap.add_argument("--policy-splits", type=int, nargs="+", default=[6, 6, 6, 6],
@@ -601,17 +641,42 @@ def main() -> None:
     ap.add_argument("--bundle-only", action="store_true",
                     help="rebuild bundle.json from the _meta_*.json already in --out-dir, "
                          "without exporting anything")
+    ap.add_argument("--fuse-denoise-interpolation", action="store_true",
+                    help="make denoise_0 consume x1 + previous action and form x_t "
+                         "inside the graph for a fully device-resident denoise loop")
     ap.add_argument("--_graph", dest="graph", help=argparse.SUPPRESS)
     ap.add_argument("--tokens-per-view", type=int, default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-sha", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     if args.graph:  # child invocation
+        if not args.checkpoint_sha:
+            sys.exit("internal --checkpoint-sha is required for graph export")
         export_one(args)
         return
 
     cfg = json.loads((args.checkpoint / "config.json").read_text())
+    processor_contract = build_processor_contract(args.checkpoint, cfg)
+    processor_lang_len = int(processor_contract["tokenizer"]["max_length"])
+    if args.lang_len is None:
+        args.lang_len = processor_lang_len
+    elif args.lang_len != processor_lang_len:
+        sys.exit(
+            f"--lang-len {args.lang_len} conflicts with the checkpoint processor's "
+            f"max_length={processor_lang_len}")
+    tokenizer_source = args.tokenizer or processor_contract["tokenizer"]["source"]
+    if not tokenizer_source:
+        sys.exit("checkpoint processor has no tokenizer_name; pass --tokenizer")
+    checkpoint_tree_sha = tree_sha256(args.checkpoint)
+
     if args.valid_views is None:
         args.valid_views = cfg.get("num_image_views") or 3
+    num_views = int(cfg.get("num_image_views") or 0)
+    if args.valid_views <= 0 or args.valid_views > num_views:
+        sys.exit(
+            f"--valid-views must be in [1, {num_views}], got {args.valid_views}")
+    if processor_contract["action_mode"] != cfg.get("action_mode"):
+        sys.exit("processor action mode does not match config.json")
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"exporting X-VLA split graphs -> {args.out_dir}")
@@ -630,6 +695,7 @@ def main() -> None:
             "--checkpoint", str(args.checkpoint), "--out-dir", str(args.out_dir),
             "--domain-id", str(args.domain_id), "--valid-views", str(args.valid_views),
             "--lang-len", str(args.lang_len), "--opset", str(args.opset),
+            "--checkpoint-sha", checkpoint_tree_sha,
             "--budget-gb", str(args.budget_gb),
             "--policy-splits", *[str(s) for s in args.policy_splits],
         ]
@@ -637,6 +703,8 @@ def main() -> None:
             cmd += ["--tokens-per-view", str(tokens_per_view)]
         if args.random_init:
             cmd.append("--random-init")
+        if args.fuse_denoise_interpolation:
+            cmd.append("--fuse-denoise-interpolation")
         if subprocess.run(cmd, text=True).returncode != 0:
             sys.exit(f"export of '{graph}' failed")
 
@@ -652,7 +720,31 @@ def main() -> None:
         args.out_dir.glob("_meta_*.json"),
         key=lambda p: order.get(p.stem[len("_meta_"):], len(order)),
     )
-    graphs = [g for m in metas for g in json.loads(m.read_text())["graphs"]]
+    expected_graph_identity = {
+        "checkpoint_tree_sha256": checkpoint_tree_sha,
+        "random_init": bool(args.random_init),
+        "domain_id": args.domain_id,
+        "valid_views": args.valid_views,
+        "lang_len": args.lang_len,
+        "num_image_views": num_views,
+        "chunk_size": cfg.get("chunk_size"),
+        "max_state_dim": processor_contract["state"]["model_dim"],
+        "max_action_dim": processor_contract["action"]["model_dim"],
+        "opset": args.opset,
+        "budget_gb": args.budget_gb,
+        "policy_splits": args.policy_splits,
+    }
+    meta_docs = [json.loads(path.read_text()) for path in metas]
+    for path, meta_doc in zip(metas, meta_docs, strict=True):
+        if meta_doc.get("identity") != expected_graph_identity:
+            sys.exit(
+                f"{path} was exported for a different checkpoint or graph contract; "
+                "re-export that graph family before creating this bundle")
+    graphs = [g for meta_doc in meta_docs for g in meta_doc["graphs"]]
+    denoise_meta = next(
+        (doc for path, doc in zip(metas, meta_docs, strict=True)
+         if path.stem == "_meta_denoise"), {})
+    denoise_input_mode = denoise_meta.get("denoise_input_mode", "x_t")
     missing = [n for n in GRAPHS if not (args.out_dir / f"_meta_{n}.json").exists()]
     if missing:
         print(f"  note: no graphs exported yet for {missing}")
@@ -660,7 +752,19 @@ def main() -> None:
         vision_meta = args.out_dir / "_meta_vision.json"
         if vision_meta.exists():
             tokens_per_view = json.loads(vision_meta.read_text()).get("tokens_per_view")
+
+    copy_processor_artifacts(args.checkpoint, args.out_dir, processor_contract)
+    tokenizer_identity = materialize_tokenizer(tokenizer_source, args.out_dir)
+    checkpoint_identity = {
+        "source": str(args.checkpoint),
+        "tree_sha256": checkpoint_tree_sha,
+        "random_init": bool(args.random_init),
+    }
     bundle = {
+        "schema_version": SCHEMA_VERSION,
+        "checkpoint": checkpoint_identity,
+        "processor_contract": processor_contract,
+        "tokenizer": tokenizer_identity,
         "domain_id": args.domain_id,
         "valid_views": args.valid_views,
         "num_image_views": cfg.get("num_image_views"),
@@ -668,9 +772,13 @@ def main() -> None:
         "tokens_per_view": tokens_per_view,
         "chunk_size": cfg.get("chunk_size"),
         "num_denoising_steps": cfg.get("num_denoising_steps"),
+        "denoise_input_mode": denoise_input_mode,
         "hidden_size": cfg.get("hidden_size"),
         "dim_time": cfg.get("dim_time"),
         "max_state_dim": cfg.get("max_state_dim"),
+        "max_action_dim": processor_contract["action"]["model_dim"],
+        "real_state_dim": processor_contract["state"]["dim"],
+        "real_action_dim": processor_contract["action"]["dim"],
         "action_mode": cfg.get("action_mode"),
         "policy_splits": args.policy_splits,
         "budget_gb": args.budget_gb,
