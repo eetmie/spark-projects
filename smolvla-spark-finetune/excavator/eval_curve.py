@@ -33,6 +33,7 @@ from eval_compare import (
     predict_chunks,
     score,
     source_meta,
+    tasks_for_points,
     to_30hz,
 )
 
@@ -63,6 +64,8 @@ def main():
     src_fps, joints = source_meta(preset)
     actions, bounds = load_ground_truth(preset)
     points = eval_points(preset, bounds, args.horizon, src_fps)
+    # On a multi-task preset each point carries its own episode's instruction.
+    point_tasks = tasks_for_points(preset, bounds, points)
     n = int(round(args.horizon * src_fps))
     gt = np.stack([actions[p : p + n] for p in points])
     act_dim = gt.shape[-1]
@@ -86,7 +89,7 @@ def main():
             if not (ckpt / "model.safetensors").exists():
                 continue
             chunk, fps, cams, ptype = predict_chunks(
-                ckpt, src_ds, points, args.batch_size, args.device, preset, src_fps)
+                ckpt, src_ds, points, args.batch_size, args.device, preset, src_fps, point_tasks)
             if chunk.shape[1] / fps + 1e-6 < args.horizon:
                 continue
             sc = score(to_30hz(chunk, fps, n, src_fps), gt, joints, src_fps)

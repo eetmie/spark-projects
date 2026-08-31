@@ -229,22 +229,29 @@ def _read_norm_stats(ckpt_dir: Path) -> dict | None:
     return stats
 
 
-def _dataset_meta(ckpt_dir: Path) -> tuple[int | None, str | None]:
-    """(fps, task) from the dataset this checkpoint was trained on, if reachable.
+def _dataset_meta(ckpt_dir: Path) -> tuple[int | None, list[str]]:
+    """(fps, tasks) from the dataset this checkpoint was trained on, if reachable.
 
     `train_config.json` records the dataset root as an absolute path, so this works
-    for a local fine-tune and quietly returns (None, None) for a Hub base model that
+    for a local fine-tune and quietly returns (None, []) for a Hub base model that
     was never trained here.
+
+    EVERY task, not the first one. This used to take `iloc[0]` with the comment "one
+    task per dataset here", which was true until masi_digging_dry_2 (63 sand episodes
+    + 15 rock ones). Exporting a multi-task checkpoint through that would have shipped
+    a bundle claiming to know only "move sand to container": half the fine-tune
+    unreachable, the D-pad with nothing to cycle, and no error anywhere -- the runtime
+    cannot tell a genuinely single-task bundle from a truncated one.
     """
     cfg_f = ckpt_dir / "train_config.json"
     if not cfg_f.exists():
-        return None, None
+        return None, []
     try:
         root = json.loads(cfg_f.read_text()).get("dataset", {}).get("root")
     except Exception:
-        return None, None
+        return None, []
     if not root or not (meta := Path(root) / "meta").is_dir():
-        return None, None
+        return None, []
 
     fps = None
     if (info := meta / "info.json").exists():
@@ -253,16 +260,23 @@ def _dataset_meta(ckpt_dir: Path) -> tuple[int | None, str | None]:
         except Exception:
             pass
 
-    task = None
-    if (tasks := meta / "tasks.parquet").exists():
+    tasks: list[str] = []
+    if (tasks_f := meta / "tasks.parquet").exists():
         try:
             import pandas as pd
-            col = pd.read_parquet(tasks)
-            # one task per dataset here; take the first and let --task override.
-            task = str(col["task"].iloc[0]) if "task" in col else str(col.index[0])
+            col = pd.read_parquet(tasks_f)
+            # Order by task_index, which is the integer the dataset's own `task_index`
+            # column points at -- and the order the runtime's D-pad cycles in. Row
+            # order has matched it in every dataset written so far; sorting states it
+            # instead of trusting it. LeRobot v3 puts the string in the INDEX and
+            # task_index in a column, but older writers did the reverse, so both.
+            if "task_index" in col.columns:
+                col = col.sort_values("task_index")
+            tasks = ([str(t) for t in col["task"]] if "task" in col.columns
+                     else [str(i) for i in col.index])
         except Exception:
             pass
-    return fps, task
+    return fps, tasks
 
 
 def _feature_dims(stats: dict | None) -> tuple[int | None, int | None, list[str]]:
@@ -323,8 +337,12 @@ def main() -> None:
                     help="control rate the actions were authored at. Auto-resolved from "
                          "the training dataset; required if that is not reachable, because "
                          "the Orin runtime otherwise has to guess it.")
-    ap.add_argument("--task", default=None,
-                    help="the instruction string. Auto-resolved from the training dataset.")
+    ap.add_argument("--task", action="append", dest="tasks", default=None,
+                    help="the instruction string, letter for letter as the dataset "
+                         "records it. Auto-resolved from the training dataset, including "
+                         "every task of a multi-task one. Repeatable: pass it once per "
+                         "instruction to override the resolved list, first one first "
+                         "(that is the order the runtime's D-pad cycles in).")
     ap.add_argument("--cam-slots", type=int, default=1,
                     help="camera SLOTS to size the prefix for. The vision graph stays "
                          "batch-1 (the runtime calls it once per real camera), but "
@@ -450,9 +468,9 @@ def main() -> None:
               "   The bundle will load with IDENTITY normalization and drive wrong.\n"
               "   Fine for a base-weight latency benchmark; never ship it to a robot.")
 
-    ds_fps, ds_task = _dataset_meta(ckpt_dir) if ckpt_dir else (None, None)
+    ds_fps, ds_tasks = _dataset_meta(ckpt_dir) if ckpt_dir else (None, [])
     fps = args.fps or ds_fps
-    task = args.task or ds_task
+    tasks = args.tasks or ds_tasks
     state_dim_real, action_dim_real, cameras = _feature_dims(stats)
 
     info = {
@@ -463,7 +481,13 @@ def main() -> None:
         "torch": torch.__version__,
         # --- what the runtime must not guess -------------------------------------
         "fps": fps,
-        "task": task,
+        # Both keys, deliberately. kaivuriprokkis `policy.bundle_tasks` (c3d4b47) reads
+        # `tasks` and falls back to `task`, and prefers the list when both are present
+        # -- so writing both gives the multi-task runtime the whole list while a runtime
+        # older than that commit still finds the single string it knows how to read,
+        # instead of refusing to start.
+        "task": tasks[0] if tasks else None,
+        "tasks": tasks,
         "state_blind": bool(args.state_blind),
         # --- shapes: padded is what the graphs take, real is what the robot has ---
         "chunk_size": int(chunk),
@@ -488,13 +512,17 @@ def main() -> None:
         "graphs": sorted(f.name for f in out.glob("*.onnx")),
     }
     (out / "export_info.json").write_text(json.dumps(info, indent=2))
-    print(f"Saved export_info.json -> fps={fps} task={task!r} "
+    print(f"Saved export_info.json -> fps={fps} tasks={tasks!r} "
           f"state_dim={state_dim_real} action_dim={action_dim_real} chunk={chunk}")
 
     if fps is None:
         print("!! fps is null — run_inference will fall back to a guess. Pass --fps.")
-    if task is None:
-        print("!! task is null — run_inference will refuse to start without --task.")
+    if not tasks:
+        print("!! tasks is empty — run_inference will refuse to start without --task.")
+    elif len(tasks) > 1:
+        print(f"   multi-task bundle: the run starts on {tasks[0]!r} and the operator "
+              f"cycles the other {len(tasks) - 1} with the D-pad "
+              f"(needs kaivuriprokkis >= c3d4b47).")
 
     n = write_manifest(out)
     print(f"Saved MANIFEST.sha256 -> {n} files "

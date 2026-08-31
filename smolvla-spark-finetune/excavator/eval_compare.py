@@ -54,7 +54,7 @@ class Preset:
 
     src: Path                      # source dataset, always at native fps with ALL cameras
     out_dir: Path                  # sweep dir holding the runs
-    task: str                      # instruction string fed to every model
+    task: str | None               # instruction fed to every model; None = per-episode
     val_episodes: list[int]        # held out from training, scored here
     stride_eval: int               # spacing between eval start points, in source frames
     state_blind_repos: set[str] = field(default_factory=set)
@@ -116,6 +116,68 @@ PRESETS = {
                       87, 97, 107, 117, 127, 137, 147, 157, 167, 177],
         stride_eval=15,
     ),
+    # The 2026-08-28 dry-sand session: 62 episodes / 100490 frames, same rig and
+    # schema as digging (cam1 IR + cam2 RGB, 3-dim state, 4-dim action). Episodes are
+    # ~2.9x longer than digging's (1621 vs 571 frames), so 62 episodes carry nearly the
+    # same frame budget -- and make_trim_variant reports only 0.2% cuttable, hence no
+    # _clean variant to point at: src is the Desktop recording itself.
+    #
+    # THE TASK STRING IS NOT THE SAME as every other digging preset above. This
+    # recording says "move sand to container"; the others say "move the sand to the
+    # container". SmolVLA conditions on the language embedding, so scoring a dry run
+    # with the older phrasing feeds it an instruction it never trained on -- and
+    # nothing errors: the prefix is well-formed and the numbers come out plausible but
+    # wrong. Copied from meta/tasks.parquet, not from the preset above.
+    "digging_dry": Preset(
+        src=Path("/home/masi-pgx/Desktop/masi_digging_dry"),
+        out_dir=ROOT / "outputs/digging_dry",
+        task="move sand to container",
+        val_episodes=list(range(5, 62, 10)),
+        stride_eval=15,
+    ),
+    # The 2026-08-31 session: 78 episodes / 65655 frames, same rig and schema again --
+    # and the FIRST TWO-TASK recording. Episodes 0-62 are "move sand to container",
+    # 63-77 are "move rock to container", one instruction per episode.
+    #
+    # `task=None` is the point of this preset: it makes tasks_for_points feed each
+    # episode its OWN instruction. Pinning a string the way every preset above does
+    # would score all 15 rock episodes under the sand instruction and quietly report
+    # the result as the model's error.
+    #
+    # Held out is the usual every-10th-from-5, which lands on 5/15/25/35/45/55 in the
+    # sand block and 65/75 in the rock block -- both tasks are represented, roughly in
+    # proportion (2 of 15 rock, 6 of 63 sand). Keep it in step with run_digging.sh,
+    # which derives range(5, 78, 10) from the dataset's own info.json.
+    #
+    # It is also the first recording to span TWO parquet shards; see read_shards.
+    "digging_dry2": Preset(
+        src=Path("/home/masi-pgx/Desktop/masi_digging_dry_2"),
+        out_dir=ROOT / "outputs/digging_dry2",
+        task=None,
+        val_episodes=list(range(5, 78, 10)),
+        stride_eval=15,
+    ),
+    # The same run and the same held-out episodes as digging_dry2, split by instruction.
+    # The headline table blends both tasks into one mean, which cannot say whether the
+    # model learned one instruction and is dragging the other along: 87 of the 409 points
+    # are rock, so a rock-only failure would move the blended number by very little.
+    # These two score the halves separately. They still set task=None -- each episode gets
+    # its own instruction, exactly as in the combined run, so the numbers decompose.
+    # Rock rests on only 2 held-out episodes: read it as a smoke test, not a tight estimate.
+    "digging_dry2_sand": Preset(
+        src=Path("/home/masi-pgx/Desktop/masi_digging_dry_2"),
+        out_dir=ROOT / "outputs/digging_dry2",
+        task=None,
+        val_episodes=[5, 15, 25, 35, 45, 55],
+        stride_eval=15,
+    ),
+    "digging_dry2_rock": Preset(
+        src=Path("/home/masi-pgx/Desktop/masi_digging_dry_2"),
+        out_dir=ROOT / "outputs/digging_dry2",
+        task=None,
+        val_episodes=[65, 75],
+        stride_eval=15,
+    ),
 }
 
 
@@ -147,15 +209,87 @@ def source_meta(preset):
     return int(info["fps"]), list(info["features"]["action"]["names"])
 
 
+def read_shards(dirpath):
+    """Concatenate every parquet shard under `dirpath`, in file order.
+
+    LeRobot v3 rolls over to a new shard once one passes `data_files_size_in_mb`
+    (100 MB) -- `data/chunk-000/file-001.parquet`, and a matching second file under
+    `meta/episodes/`. Every recording up to masi_digging_dry fitted in a single shard,
+    so this used to read `chunk-000/file-000.parquet` by name. masi_digging_dry_2 has
+    two, and reading only the first drops episodes 63-77 -- the entire "move rock to
+    container" task -- out of the ground truth while the table still prints plausible
+    numbers for the episodes that survived. Shard order is the row order the global
+    `dataset_from_index`/`dataset_to_index` are counted in, so sorted() is load-bearing,
+    not cosmetic (the names are zero-padded, so it is a numeric sort).
+    """
+    files = sorted(Path(dirpath).rglob("*.parquet"))
+    if not files:
+        raise SystemExit(f"no parquet shards under {dirpath}")
+    return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+
+
 def load_ground_truth(preset):
-    df = pd.read_parquet(preset.src / "data" / "chunk-000" / "file-000.parquet")
-    eps = pd.read_parquet(preset.src / "meta" / "episodes" / "chunk-000" / "file-000.parquet")
+    df = read_shards(preset.src / "data")
+    eps = read_shards(preset.src / "meta" / "episodes")
     actions = np.stack(df["action"].to_numpy()).astype(np.float32)
     bounds = {
         int(r["episode_index"]): (int(r["dataset_from_index"]), int(r["dataset_to_index"]))
         for _, r in eps.iterrows()
     }
+    # The shards must line up end to end with the global indices the episode table
+    # counts in; if they ever do not, every eval window is silently off by a shard.
+    span = max(hi for _, hi in bounds.values())
+    if span != len(actions):
+        raise SystemExit(
+            f"{preset.src}: episode table ends at row {span} but data has {len(actions)} rows "
+            f"-- shard concatenation is out of step with dataset_from_index/dataset_to_index")
     return actions, bounds
+
+
+def episode_tasks(preset):
+    """{episode_index: instruction} straight from the recording's own metadata."""
+    out = {}
+    for _, r in read_shards(preset.src / "meta" / "episodes").iterrows():
+        names = [str(t) for t in r["tasks"]]
+        if len(names) != 1:
+            raise SystemExit(f"episode {int(r['episode_index'])} has {len(names)} tasks {names}; "
+                             "this script assumes one instruction per episode")
+        out[int(r["episode_index"])] = names[0]
+    return out
+
+
+def tasks_for_points(preset, bounds, points):
+    """The instruction to feed at each eval start point.
+
+    SmolVLA conditions on the language embedding, so the instruction is an input like
+    any other -- and a wrong-but-well-formed one produces a plausible table rather than
+    an error (that is how the "move the sand to the container" / "move sand to
+    container" mismatch could have gone unnoticed). Hence both branches here check
+    themselves against the recording:
+
+    * single-task preset -- `task` is pinned, and must be the string the dataset
+      actually carries, and the dataset must really only have one.
+    * multi-task preset -- `task=None`, and each point takes ITS OWN episode's
+      instruction. Pinning one string across a two-task recording would score every
+      rock episode under the sand instruction, which is not a number about anything.
+    """
+    per_ep = episode_tasks(preset)
+    recorded = sorted(set(per_ep.values()))
+
+    if preset.task is not None:
+        if len(recorded) > 1:
+            raise SystemExit(
+                f"{preset.src} carries {len(recorded)} tasks {recorded}, but the preset pins "
+                f"one ({preset.task!r}). Set task=None to score each episode with its own.")
+        if preset.task not in recorded:
+            raise SystemExit(f"preset task {preset.task!r} is not in {preset.src}: {recorded}")
+        return [preset.task] * len(points)
+
+    owner = {}
+    for ep in preset.val_episodes:
+        start, stop = bounds[ep]
+        owner.update(dict.fromkeys(range(start, stop), per_ep[ep]))
+    return [owner[p] for p in points]
 
 
 def eval_points(preset, bounds, max_horizon_s, src_fps):
@@ -193,7 +327,7 @@ def run_fps(ckpt, src_fps):
     return src_fps
 
 
-def predict_chunks(ckpt, src_ds, points, batch_size, device, preset, src_fps):
+def predict_chunks(ckpt, src_ds, points, batch_size, device, preset, src_fps, point_tasks):
     """Run one model over all eval points. Returns (N, chunk, action_dim) unnormalized
     actions and the fps its chunk is clocked at."""
     # SmolVLA's flow-matching sampler draws random noise, so repeated evals of the same
@@ -222,7 +356,7 @@ def predict_chunks(ckpt, src_ds, points, batch_size, device, preset, src_fps):
         state = torch.stack([it["observation.state"] for it in items])
         if state_blind:
             state = torch.zeros_like(state)
-        batch = {"observation.state": state, "task": [preset.task] * len(group)}
+        batch = {"observation.state": state, "task": point_tasks[i : i + batch_size]}
         for key in cam_keys:
             batch[key] = torch.stack([it[key] for it in items])
         with torch.no_grad():
@@ -262,8 +396,11 @@ def main():
     actions, bounds = load_ground_truth(preset)
     max_h = max(args.horizons)
     points = eval_points(preset, bounds, max_h, src_fps)
+    point_tasks = tasks_for_points(preset, bounds, points)
     print(f"source {preset.src.name} @ {src_fps}fps, joints {joints}")
-    print(f"evaluating on {len(points)} start points from held-out episodes {preset.val_episodes}\n")
+    print(f"evaluating on {len(points)} start points from held-out episodes {preset.val_episodes}")
+    counts = {t: point_tasks.count(t) for t in sorted(set(point_tasks))}
+    print("instructions: " + ", ".join(f"{t!r} x{n}" for t, n in counts.items()) + "\n")
 
     runs = args.runs
     if runs is None:
@@ -292,7 +429,7 @@ def main():
             continue
         print(f"[{name}] running inference ...", flush=True)
         chunk, fps, cams, ptype = predict_chunks(
-            ckpt, src_ds, points, args.batch_size, args.device, preset, src_fps)
+            ckpt, src_ds, points, args.batch_size, args.device, preset, src_fps, point_tasks)
         covered = chunk.shape[1] / fps
         cam_short = [c.rsplit(".", 1)[-1] for c in cams]
         print(f"[{name}] {ptype}, cameras {cam_short}, chunk {chunk.shape[1]} @ {fps}fps = {covered:.2f}s")

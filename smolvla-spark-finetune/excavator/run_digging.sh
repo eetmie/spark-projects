@@ -44,6 +44,19 @@ DS_IR=$ROOT/datasets/masi_digging_ir
 # built by make_trim_variant.py + make_camera_variant.py. See NOTES-dataset-trim.md.
 DS_CLEAN=$ROOT/datasets/masi_digging_clean
 DS_CLEAN_IR=$ROOT/datasets/masi_digging_clean_ir
+# 2026-08-28 recording session: dry sand, 62 eps / 100490 frames @30fps, same rig
+# (cam1 IR + cam2 RGB, state [lift,tilt,scoop], action [slew,lift,tilt,scoop]).
+# NOT trimmed: make_trim_variant.py reports 0.2% cuttable (median head trim 0 frames)
+# against 10% on masi_digging -- this session has no boundary dead air to remove, so
+# there is no _clean variant and dry_ir views the Desktop source directly.
+DS_DRY_IR=$ROOT/datasets/masi_digging_dry_ir
+# 2026-08-31 session: 78 eps / 65655 frames @30fps, same rig -- and the FIRST TWO-TASK
+# recording: eps 0-62 "move sand to container", eps 63-77 "move rock to container".
+# lerobot-train needs nothing special for that (the instruction is a per-frame column and
+# rides through task_index -> tasks.parquet), but the EVAL did: eval_compare pinned one
+# instruction per preset and read only shard file-000. Both fixed 2026-08-31; the
+# digging_dry2 preset sets task=None so each episode is scored with its own instruction.
+DS_DRY2_IR=$ROOT/datasets/masi_digging_dry2_ir
 
 # Held out for eval_compare/eval_curve, spread across the session so the split is not a
 # single stretch of the recording.
@@ -83,6 +96,8 @@ config_for() {
     # its own output dir instead of colliding with the chunk-50 one. Pass CHUNK=12.
     clean_ir12) echo "$DS_CLEAN_IR|local/masi_digging_clean_ir"    ;;
     clean_both) echo "$DS_CLEAN|local/masi_digging_clean_both"     ;;
+    dry_ir)     echo "$DS_DRY_IR|local/masi_digging_dry_ir"        ;;
+    dry2_ir)    echo "$DS_DRY2_IR|local/masi_digging_dry2_ir"      ;;
     *) return 1 ;;
   esac
 }
