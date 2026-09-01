@@ -120,7 +120,15 @@ def emit_reference(args) -> None:
     cfg_obj = PreTrainedConfig.from_pretrained(str(args.checkpoint))
     cfg_obj.device = "cpu"
     ref = XVLAPolicy.from_pretrained(str(args.checkpoint), config=cfg_obj)
-    ref.to("cpu").eval()
+    # float(), to match the exporter exactly. A bf16 fine-tune (run_digging.sh trains with
+    # --policy.dtype=bfloat16 by default) loads with bf16 weights, and export_split_onnx
+    # traces every module through `.eval().float()` -- so the GRAPHS are fp32 upcast from
+    # those weights. Comparing fp32 graphs against a bf16 reference would either fail
+    # outright ("expected m1 and m2 to have the same dtype", which is what a bf16
+    # checkpoint did here) or, worse, quietly measure bf16 rounding and report it as
+    # export error. Upcasting the reference the same way makes the two paths the same
+    # numerics, so what is left is genuinely the split's own error.
+    ref.to("cpu").float().eval()
     model = ref.model
 
     x1 = rng.standard_normal((1, chunk_size, model.dim_action)).astype(np.float32)

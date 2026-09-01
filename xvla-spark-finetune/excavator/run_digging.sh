@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# X-VLA-0.9B fine-tune on masi_digging, set up to be scored against the SmolVLA runs
-# in ../../smolvla-spark-finetune/outputs/digging/ on exactly the same footing.
+# X-VLA-0.9B fine-tune on the excavator datasets, set up to be scored against the
+# SmolVLA runs on exactly the same footing.
 #
 #   ir    observation.images.cam1               (D435i infrared left imager)
 #   both  observation.images.cam1 + .cam2       (IR + RGB colour imager)
 #
-#   bash run_digging.sh              # both runs, sequentially
-#   bash run_digging.sh ir           # just the IR one — answers the SmolVLA-vs-X-VLA
-#                                    # question at half the cost
+#   bash run_digging.sh              # full-data IR and both-camera runs, sequentially
+#   bash run_digging.sh clean_ir     # cleaned IR data (recommended first real run)
+#   CHUNK=30 bash run_digging.sh clean_ir
 #   STEPS=2000 bash run_digging.sh ir
 #
 # This is a SEPARATE pipeline from the SmolVLA one on purpose (the SmolVLA side is still
@@ -86,9 +86,12 @@ LOGS=$OUT/logs
 STEPS=${STEPS:-20000}
 BATCH=${BATCH:-32}
 CHUNK=${CHUNK:-50}
+DTYPE=${DTYPE:-bfloat16}
 SEED=${SEED:-1000}
 SAVE_FREQ=${SAVE_FREQ:-2500}
 WORKERS=${WORKERS:-10}
+LOG_FREQ=${LOG_FREQ:-250}
+SAVE_CHECKPOINT=${SAVE_CHECKPOINT:-true}
 NORM=${NORM:-'{"VISUAL":"IDENTITY","STATE":"MEAN_STD","ACTION":"MEAN_STD"}'}
 
 # Local checkpoint dir rather than the `lerobot/xvla-base` repo id: huggingface_hub's
@@ -100,13 +103,29 @@ CKPT=${CKPT:-$ROOT/models/xvla-base-excavator}
 
 DS_BOTH=/home/masi-pgx/Desktop/masi_digging
 DS_IR=$SMOLVLA/datasets/masi_digging_ir
+DS_CLEAN=$SMOLVLA/datasets/masi_digging_clean
+DS_CLEAN_IR=$SMOLVLA/datasets/masi_digging_clean_ir
+DS_DRY_IR=$SMOLVLA/datasets/masi_digging_dry_ir
+# 2026-08-31 session, 78 eps / 65655 frames: the first TWO-TASK recording (eps 0-62
+# "move sand to container", 63-77 "move rock to container"). Nothing here needs to know
+# that -- the instruction is a per-frame column -- but the eval and the export bundle do;
+# see the SmolVLA side's digging_dry2 presets and export_split_onnx's `tasks` list.
+DS_DRY2_IR=$SMOLVLA/datasets/masi_digging_dry2_ir
 
-# Identical split to the SmolVLA sweep — the two are only comparable if the held-out
-# episodes are the same ones.
-VAL_EPISODES="5 15 25 35 45 55 65 75"
-TRAIN_EPS=$(python3 -c "
-val={$(echo $VAL_EPISODES | tr ' ' ',')}
-print('['+','.join(str(e) for e in range(82) if e not in val)+']')")
+# Episode count is read from each dataset. masi_digging grew from 82 to 189 episodes;
+# the old literal range(82) silently discarded every appended recording. By default we
+# hold out every tenth episode from 5, matching the current SmolVLA runner. For cleaned
+# data, queue_digging.sh exports the remapped held-out ids so both architectures score
+# the same source recordings after episodes 83-90 were dropped and survivors renumbered.
+split_for() {
+  local root=$1 n val train
+  n=$(python3 -c "import json;print(json.load(open('$root/meta/info.json'))['total_episodes'])")
+  val=${VAL_EPISODES:-$(python3 -c "print(' '.join(str(e) for e in range(5,$n,10)))")}
+  train=$(python3 -c "
+val={$(echo $val | tr ' ' ',')}
+print('['+','.join(str(e) for e in range($n) if e not in val)+']')")
+  echo "$n|$val|$train"
+}
 
 mkdir -p "$LOGS"
 
@@ -117,8 +136,12 @@ fi
 
 config_for() {
   case "$1" in
-    ir)   echo "$DS_IR|local/masi_digging_ir"     ;;
-    both) echo "$DS_BOTH|local/masi_digging_both" ;;
+    ir)         echo "$DS_IR|local/masi_digging_ir"             ;;
+    both)       echo "$DS_BOTH|local/masi_digging_both"         ;;
+    clean_ir)   echo "$DS_CLEAN_IR|local/masi_digging_clean_ir" ;;
+    clean_both) echo "$DS_CLEAN|local/masi_digging_clean_both"  ;;
+    dry_ir)     echo "$DS_DRY_IR|local/masi_digging_dry_ir"     ;;
+    dry2_ir)    echo "$DS_DRY2_IR|local/masi_digging_dry2_ir"   ;;
     *) return 1 ;;
   esac
 }
@@ -131,6 +154,10 @@ train_one() {
   local dir=$OUT/$name
   local log=$LOGS/$name.log
 
+  local sp; sp=$(split_for "$root")
+  local n_eps=${sp%%|*}; local _rest=${sp#*|}
+  local val_eps=${_rest%%|*}; local train_eps=${_rest##*|}
+
   if [ -d "$dir/checkpoints/last" ]; then
     local done_steps
     done_steps=$(grep -oE "[0-9]+" "$dir/checkpoints/last/training_state/training_step.json" 2>/dev/null | head -1)
@@ -139,21 +166,33 @@ train_one() {
       return 0
     fi
     echo "[$(date +%H:%M:%S)] run $name resuming from step ${done_steps:-?}"
+    # TrainPipelineConfig normally gives the saved checkpoint config precedence over
+    # the current command line. Explicitly override the run-length controls: otherwise
+    # the 250-step throughput probe resumes with steps=250 and exits immediately when
+    # the user asks for a 20k run. Architecture/data settings stay checkpoint-owned.
     WANDB_MODE=disabled "$VENV/lerobot-train" \
       --config_path="$dir/checkpoints/last/pretrained_model/train_config.json" \
-      --resume=true >> "$log" 2>&1
+      --resume=true \
+      --steps="$STEPS" \
+      --batch_size="$BATCH" \
+      --num_workers="$WORKERS" \
+      --log_freq="$LOG_FREQ" \
+      --save_freq="$SAVE_FREQ" \
+      --save_checkpoint="$SAVE_CHECKPOINT" >> "$log" 2>&1
   else
     echo "[$(date +%H:%M:%S)] === xvla run $name: $repo chunk=$CHUNK steps=$STEPS ==="
+    echo "[$(date +%H:%M:%S)]     $n_eps episodes, held out: $val_eps"
     WANDB_MODE=disabled "$VENV/lerobot-train" \
       --dataset.repo_id="$repo" \
       --dataset.root="$root" \
       --dataset.video_backend=torchcodec \
-      --dataset.episodes="$TRAIN_EPS" \
+      --dataset.episodes="$train_eps" \
       --policy.path="$CKPT" \
       --policy.action_mode=auto \
       --policy.normalization_mapping="$NORM" \
       --policy.chunk_size="$CHUNK" \
       --policy.n_action_steps="$CHUNK" \
+      --policy.dtype="$DTYPE" \
       --policy.freeze_vision_encoder=true \
       --policy.freeze_language_encoder=true \
       --policy.device=cuda \
@@ -165,8 +204,9 @@ train_one() {
       --steps=$STEPS \
       --batch_size=$BATCH \
       --num_workers=$WORKERS \
-      --log_freq=250 \
+      --log_freq=$LOG_FREQ \
       --save_freq=$SAVE_FREQ \
+      --save_checkpoint=$SAVE_CHECKPOINT \
       --eval_freq=0 \
       > "$log" 2>&1
   fi
@@ -184,8 +224,8 @@ RUNS=("$@")
 [ ${#RUNS[@]} -eq 0 ] && RUNS=(ir both)
 
 echo "xvla digging sweep start $(date)"
-echo "held-out episodes: $VAL_EPISODES"
-echo "steps=$STEPS batch=$BATCH chunk=$CHUNK workers=$WORKERS"
+echo "held-out override: ${VAL_EPISODES:-<derived per run: every 10th from 5>}"
+echo "steps=$STEPS batch=$BATCH chunk=$CHUNK dtype=$DTYPE workers=$WORKERS"
 echo "norm=$NORM"
 for r in "${RUNS[@]}"; do train_one "$r"; done
 echo "xvla digging sweep done $(date)"

@@ -10,10 +10,14 @@
 #
 # Re-running is safe and cheap: finished files resume to a no-op.
 
-set -uo pipefail
+set -euo pipefail
 
 DST=${1:-/home/masi-pgx/spark-projects/xvla-spark-finetune/models/xvla-base}
-BASE=https://huggingface.co/lerobot/xvla-base/resolve/main
+# Pin the model used by the validated 879.7 M parameter runtime contract. A moving
+# `main` here would make an old training result impossible to reproduce after an
+# upstream checkpoint update.
+REV=${REV:-cdb7964e4fe842935d671bfab5a5ebe00a96648c}
+BASE=https://huggingface.co/lerobot/xvla-base/resolve/$REV
 
 mkdir -p "$DST"
 for f in config.json policy_preprocessor.json policy_postprocessor.json model.safetensors; do
@@ -24,6 +28,16 @@ for f in config.json policy_preprocessor.json policy_postprocessor.json model.sa
     echo "  -> $(stat -c %s "$DST/$f" 2>/dev/null || echo MISSING) bytes"
 done
 
+printf '%s\n' "$REV" > "$DST/REVISION"
+
+# `hf cache verify` also works for a curl-populated local directory. The repository
+# README and .gitattributes are intentionally omitted, so missing-file warnings are
+# expected; every downloaded training artifact must still checksum correctly.
+if command -v hf >/dev/null 2>&1; then
+    hf cache verify lerobot/xvla-base --local-dir "$DST" --revision "$REV" --format agent
+fi
+
 echo
-echo "expected: model.safetensors ~3519 MB, config.json ~5463 B"
+echo "revision: $REV"
+echo "expected: model.safetensors 3519073692 B, config.json ~5463 B"
 ls -la "$DST"

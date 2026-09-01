@@ -80,6 +80,9 @@ def main():
         if (src / name).exists():
             shutil.copy2(src / name, dst / name)
 
+    if (src / "REVISION").exists():
+        shutil.copy2(src / "REVISION", dst / "REVISION")
+
     (dst / "model.safetensors").symlink_to(src / "model.safetensors")
 
     print(f"{dst}")

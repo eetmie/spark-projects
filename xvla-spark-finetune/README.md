@@ -20,12 +20,17 @@ and neither experiment should be able to break the other.
 | shared | why it matters |
 |---|---|
 | the same venv (`../smolvla-spark-finetune/.venv`) | lerobot 0.5.1, torch 2.12.0+cu130 for both — no version variable smuggled into the result |
-| the same dataset `masi_digging` | 82 eps, 41765 frames @30 fps, task "move the sand to the container" |
-| the same cam1-only view | `datasets/masi_digging_ir`, metadata-only, **symlinked** frames — byte-identical images |
-| the same held-out episodes | `5 15 25 35 45 55 65 75` |
-| the same chunk length (50) | the xvla-base checkpoint ships 30 = 1.0 s, less than the 1.5 s scoring horizon |
+| the same current dataset | recommended first run is `masi_digging_clean`: 181 eps / 103356 frames @30 fps |
+| the same cam1-only view | `datasets/masi_digging_clean_ir`, metadata-only, **symlinked** frames — byte-identical images |
+| the same held-out recordings | the 18 remapped cleaned ids used by the SmolVLA cleaned-data runs |
+| the same chunk length (30) | directly compares with SmolVLA `clean_ir30` and matches the validated X-VLA Orin contract |
 | the same frozen slice | VLM encoders frozen, action head/policy transformer trains |
 | the same metric | `eval_compare.py` disp_err, integrated command error over a fixed wall-clock horizon |
+
+The full 189-episode data, two-camera variants, and the newer dry-sand recording remain
+available as `ir`, `both`, `clean_both`, and `dry_ir` targets. Episode counts are
+read from each dataset at launch. This matters: the original runner hardcoded
+`range(82)` and would silently ignore the 107 episodes appended later.
 
 The eval harness lives on the SmolVLA side but is **architecture-agnostic**: it loads
 whatever `policy.type` a checkpoint records via `get_policy_class`, and feeds each model
@@ -34,9 +39,10 @@ only the cameras its own config lists. Runs in different sweep dirs are joined w
 
 ```bash
 cd ../smolvla-spark-finetune/excavator
-../.venv/bin/python eval_compare.py --preset digging --horizons 1.5 \
-    --extra-runs xvla_ir=../../xvla-spark-finetune/outputs/digging/ir \
-                 xvla_both=../../xvla-spark-finetune/outputs/digging/both
+../.venv/bin/python eval_compare.py --preset digging_clean --runs \
+    --horizons 0.5 \
+    --extra-runs smolvla_clean_ir30=../outputs/digging_clean30/clean_ir \
+                 xvla_clean_ir=../../xvla-spark-finetune/outputs/clean_ir_chunk30/clean_ir
 ```
 
 That prints SmolVLA and X-VLA rows in one table with a `policy` column.
@@ -44,13 +50,17 @@ That prints SmolVLA and X-VLA rows in one table with a `policy` column.
 ## Run
 
 ```bash
-bash excavator/fetch_checkpoint.sh                  # once — 3.52 GB into models/xvla-base/
-python excavator/prepare_checkpoint.py              # once — derive xvla-base-excavator/
-bash excavator/run_digging.sh ir          # IR only — the comparison at half the cost
-bash excavator/run_digging.sh             # ir then both
+bash excavator/setup.sh clean_ir          # idempotent install/checkpoint/data/GPU preflight
+bash excavator/smoke.sh clean_ir          # 2 train steps, no multi-GB checkpoint
+
+# Recommended first real run: cleaned IR, chunk 30, 30k steps, automatic held-out curve.
+setsid nohup bash excavator/queue_digging.sh clean_ir \
+    > outputs/clean_ir-queue.log 2>&1 &
 ```
 
-The checkpoint is fetched with curl, not `huggingface_hub`: `snapshot_download` stalled
+The base checkpoint is pinned to Hub revision
+`cdb7964e4fe842935d671bfab5a5ebe00a96648c` and verified with `hf cache verify`.
+It is fetched with curl, not `snapshot_download`: the latter stalled
 twice partway through the safetensors here — process alive, file not growing, no exception,
 so its own retry never fired. `curl --speed-limit/--speed-time` turns a stall into an error
 that `--retry` can act on, and `-C -` resumes. ~9 MB/s vs ~4 MB/s before it hung.
@@ -59,11 +69,16 @@ that `--retry` can act on, and `-C -` resumes. ~9 MB/s vs ~4 MB/s before it hung
 SmolVLA's 450 M, and its hot loop has no KV cache. On GB10 the SmolVLA runs measured
 0.507 s/step cold and **0.630 s/step heat-soaked** (batch 32, chunk 50, frozen vision) —
 the GPU settles around 79 °C and 2457/3003 MHz under sustained load, so always size an
-overnight run from the heat-soaked figure, not a cold probe. Do the same for X-VLA:
+overnight run from the heat-soaked figure, not a cold probe. The old X-VLA FP32 probe
+measured **1.823 s/step** at batch 32 / chunk 50. The maintained model card recommends
+bfloat16; that is now the runner default. A 50-step batch-32 / chunk-30 probe measured
+**1.22–1.26 s/step** after warm-up, putting 30k steps at about 10.4 hours before allowing
+for long-run thermal drift:
 
 ```bash
-STEPS=250 SAVE_FREQ=100000 bash excavator/run_digging.sh ir
-grep -oE "updt_s:[0-9.]+" outputs/digging/logs/ir.log | tail
+STEPS=250 SAVE_CHECKPOINT=false OUT=outputs/bf16-probe \
+    bash excavator/run_digging.sh clean_ir
+grep -oE "updt_s:[0-9.]+" outputs/bf16-probe/logs/clean_ir.log | tail
 ```
 
 ## The stock checkpoint cannot train on this dataset unmodified
@@ -107,8 +122,11 @@ All four are argued in the header of `excavator/run_digging.sh`. Short version:
   X-VLA does not normalize proprio internally and our state is joint angles in degrees
   (−114…134). **ACTION stays MEAN_STD**: that is what the pretrained head was trained with
   *and* what SmolVLA uses, so after the override both architectures normalize identically.
-- **`chunk_size=50`** — the base checkpoint ships 30 (which is where the Orin's "30 actions
-  per chunk" comes from); 50 matches SmolVLA and clears the 1.5 s scoring horizon.
+- **`dtype=bfloat16`** — this is the maintained X-VLA model card's training setting and
+  the native low-precision format on GB10. The earlier FP32 probe remains a baseline.
+- **`chunk_size=30` for the queued first run** — the base checkpoint and validated Orin
+  runtime both use 30, and SmolVLA already has an otherwise-matched cleaned-IR chunk-30
+  run. `run_digging.sh` itself remains configurable; use 50 only for a chunk-50 comparison.
 - **VLM encoders frozen** — matches the config's own documented intent (its literal
   defaults disagree with its docstring) and the SmolVLA recipe.
 
@@ -123,9 +141,9 @@ checkpoint cleanly. But two deployment gaps are open:
 1. **A 2-camera model has no deploy path on either architecture.** SmolVLA's exporter and
    Orin runtime are single-camera end to end (see the SmolVLA project notes); X-VLA's
    split export was made with `--valid-views 1`.
-2. **The Orin latency numbers were measured at 30 actions/chunk.** Training at 50 changes
-   the denoise sequence length, and X-VLA cannot KV-cache across denoising steps, so
-   re-measure before quoting a replan rate.
+2. **Chunk length is part of the deployment contract.** The Orin latency numbers were
+   measured at 30 actions/chunk. Any other value changes the denoise sequence length, and
+   X-VLA cannot KV-cache across denoising steps, so re-measure before quoting a replan rate.
 
 ## Status
 
@@ -139,6 +157,11 @@ checkpoint cleanly. But two deployment gaps are open:
   learnable** (frozen encoders confirmed), 74-episode split, checkpoint written. The saved
   train_config records action_mode=auto, chunk 50/50, STATE+ACTION MEAN_STD, VISUAL IDENTITY,
   input_features `[observation.state, observation.images.cam1]`, action shape `[4]`.
-  **Not yet trained for real** — the GPU was busy with the SmolVLA digging sweep. A 250-step
-  throughput probe is armed to run automatically when that queue finishes
-  (`excavator/probe_after_smolvla.sh`, logs to `outputs/probe_after.log`).
+  The subsequent 250-step FP32 throughput probe completed successfully at 1.823 s/step,
+  produced a valid checkpoint, and was exported through the split deployment contract.
+- 2026-08-31 — workstation stack hardened for a real run: Hub revision pinned and
+  checksummed; setup/preflight/smoke/queue entry points added; bfloat16 training enabled;
+  the current 189/181/62-episode datasets supported; episode splits made dynamic; cleaned
+  held-outs mapped to the same source recordings as SmolVLA; checkpoint disk budget checked;
+  and resume now overrides the old probe's saved `steps=250` instead of silently exiting.
+  **No long X-VLA fine-tune has been launched yet.**

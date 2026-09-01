@@ -552,6 +552,81 @@ def export_one(args) -> None:
 # ======================================================================================
 
 
+def _dataset_fps(checkpoint: Path) -> int | None:
+    """Playback rate of the dataset this checkpoint was fine-tuned on.
+
+    The action chunk is RATE commands sampled at the training rate, so playing it at a
+    different rate scales every motion the machine makes, with nothing downstream able to
+    notice. `xvla_split.resolve_fps` therefore refuses to start without one rather than
+    assuming 30 the way the SmolVLA path can.
+
+    Unlike the task strings this needs no parquet reader -- meta/info.json is plain JSON --
+    so it resolves even from the export venv, which carries neither pandas nor pyarrow.
+    """
+    cfg_f = checkpoint / "train_config.json"
+    if not cfg_f.is_file():
+        return None
+    try:
+        root = json.loads(cfg_f.read_text()).get("dataset", {}).get("root")
+        if not root:
+            return None
+        info = Path(root) / "meta" / "info.json"
+        if not info.is_file():
+            return None
+        return json.loads(info.read_text()).get("fps")
+    except Exception as exc:
+        print(f"!! cannot read the training fps from {cfg_f}: {type(exc).__name__}: {exc}")
+        return None
+
+
+def _dataset_tasks(checkpoint: Path) -> list[str]:
+    """The instruction strings this checkpoint was fine-tuned against, in task_index order.
+
+    The runtime has no default for these: `xvla_split.resolve_tasks` takes them from the
+    bundle, or from --task, or it refuses to start -- because the policy conditions on the
+    language embedding and a phrasing it never trained on is out of distribution with
+    nothing downstream able to notice. Leaving them out therefore does not produce a
+    bundle that merely lacks a nicety; it produces one that cannot be launched without
+    the operator retyping the strings by hand, exactly right, from memory.
+
+    A multi-task fine-tune (masi_digging_dry_2: 63 sand episodes + 15 rock) records the
+    whole LIST, in the order the D-pad will cycle. `train_config.json` records the dataset
+    root as an absolute path, so this works for a local fine-tune and returns [] for a base
+    checkpoint that was never trained here -- which is correct: xvla-base has no task.
+    """
+    cfg_f = checkpoint / "train_config.json"
+    if not cfg_f.is_file():
+        return []
+    try:
+        root = json.loads(cfg_f.read_text()).get("dataset", {}).get("root")
+    except Exception:
+        return []
+    if not root:
+        return []
+    tasks_f = Path(root) / "meta" / "tasks.parquet"
+    if not tasks_f.is_file():
+        return []
+    try:
+        import pandas as pd
+        col = pd.read_parquet(tasks_f)
+        # task_index is the integer the dataset's own task_index column points at, and
+        # the order the D-pad cycles in. LeRobot v3 puts the string in the INDEX and
+        # task_index in a column; older writers did the reverse, so handle both.
+        if "task_index" in col.columns:
+            col = col.sort_values("task_index")
+        return ([str(t) for t in col["task"]] if "task" in col.columns
+                else [str(i) for i in col.index])
+    except Exception as exc:
+        # LOUD, not silent. This export venv is deliberately a different one from the
+        # training venv (lerobot 0.6.1 vs 0.5.1) and carries neither pandas nor pyarrow,
+        # so it cannot read tasks.parquet at all -- a `return []` here is indistinguishable
+        # from "this is a base checkpoint with no task", and quietly ships a bundle the
+        # runtime will refuse to launch. Resolve them in the training venv and pass --task.
+        print(f"!! cannot read {tasks_f}: {type(exc).__name__}: {exc}\n"
+              f"   pass the instruction(s) explicitly with --task instead.")
+        return []
+
+
 def _provenance(checkpoint: Path, opset: int) -> dict:
     """Who built this bundle, from what, with which library versions.
 
@@ -627,6 +702,17 @@ def main() -> None:
                          "the runtime and never need a forward pass.")
     ap.add_argument("--lang-len", type=int, default=None,
                     help="language tokens; defaults to the saved policy preprocessor")
+    ap.add_argument("--fps", type=int, default=None,
+                    help="control rate the actions were authored at. Auto-resolved from "
+                         "the checkpoint's training dataset; the runtime REFUSES to start "
+                         "without one, because the chunk is rate commands and a wrong rate "
+                         "silently scales every motion.")
+    ap.add_argument("--task", action="append", dest="tasks", default=None,
+                    help="instruction string, letter for letter as the training dataset "
+                         "records it. Auto-resolved from the checkpoint's dataset, "
+                         "including every task of a multi-task one. Repeatable: pass once "
+                         "per instruction to override, first one first (the order the "
+                         "runtime's D-pad cycles in).")
     ap.add_argument("--tokenizer", default=None,
                     help="tokenizer path/id; defaults to the saved policy preprocessor")
     ap.add_argument("--budget-gb", type=float, default=DEFAULT_BUDGET_GB,
@@ -741,6 +827,16 @@ def main() -> None:
                 f"{path} was exported for a different checkpoint or graph contract; "
                 "re-export that graph family before creating this bundle")
     graphs = [g for meta_doc in meta_docs for g in meta_doc["graphs"]]
+    # size_mb from the file ON DISK, not from _meta. The scratch files record what the
+    # exporter wrote; a bundle can legitimately be rebuilt over graphs that were rewritten
+    # since -- tools/fp16_weights.py halves every one of them -- and then _meta's sizes are
+    # a bundle that misreports its own footprint by 2x. Which is exactly the number someone
+    # consults to ask whether it fits on an 8 GB board. params stay from _meta: those are a
+    # property of the graph, unchanged by a weight cast.
+    for g in graphs:
+        f = args.out_dir / str(g.get("file") or "")
+        if f.is_file():
+            g["size_mb"] = round(f.stat().st_size / 1e6, 1)
     denoise_meta = next(
         (doc for path, doc in zip(metas, meta_docs, strict=True)
          if path.stem == "_meta_denoise"), {})
@@ -760,8 +856,11 @@ def main() -> None:
         "tree_sha256": checkpoint_tree_sha,
         "random_init": bool(args.random_init),
     }
+    tasks = args.tasks or _dataset_tasks(args.checkpoint)
+    fps = args.fps or _dataset_fps(args.checkpoint)
     bundle = {
         "schema_version": SCHEMA_VERSION,
+        "fps": fps,
         "checkpoint": checkpoint_identity,
         "processor_contract": processor_contract,
         "tokenizer": tokenizer_identity,
@@ -780,6 +879,10 @@ def main() -> None:
         "real_state_dim": processor_contract["state"]["dim"],
         "real_action_dim": processor_contract["action"]["dim"],
         "action_mode": cfg.get("action_mode"),
+        # Both keys: policy.bundle_tasks prefers the list and falls back to the string, so
+        # this serves a multi-task runtime and an older single-task one at once.
+        "task": tasks[0] if tasks else None,
+        "tasks": tasks,
         "policy_splits": args.policy_splits,
         "budget_gb": args.budget_gb,
         "graphs": graphs,
@@ -790,6 +893,14 @@ def main() -> None:
     print(f"\n{len(graphs)} graphs, {total / 1e6:.1f}M params total")
     print(f"largest engine: {max(g['params'] for g in graphs) * 4 / 1e9:.2f} GB fp32")
     print(f"wrote {args.out_dir / 'bundle.json'}")
+    if not tasks:
+        print("!! no task strings — run_inference will refuse to start without --task.")
+    else:
+        print(f"   tasks: {tasks}")
+    if not fps:
+        print("!! no fps — run_inference will refuse to start without --fps.")
+    else:
+        print(f"   fps:   {fps}")
     if missing:
         print("skipping MANIFEST.sha256 — the bundle is incomplete "
               f"(no graphs for {missing})")
