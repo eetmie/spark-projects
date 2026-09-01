@@ -52,6 +52,11 @@ def parse_args():
     p.add_argument("--runs", nargs="*", default=None)
     p.add_argument("--horizon", type=float, default=1.5, help="scoring horizon in seconds")
     p.add_argument("--batch-size", type=int, default=8)
+    p.add_argument("--n-draws", type=int, default=1,
+                   help="average this many flow-matching noise draws per eval point "
+                        "(default 1; see predict_chunks). X-VLA gains ~18%% from 4, "
+                        "SmolVLA ~0%% -- so a cross-architecture curve wants 4, and a "
+                        "curve compared against earlier results wants 1")
     p.add_argument("--device", default="cuda")
     return p.parse_args()
 
@@ -75,7 +80,9 @@ def main():
 
     # Zero-action reference line: anything above it has not learned the task.
     baseline = score(np.zeros((len(points), n, act_dim), np.float32), gt, joints, src_fps)["disp_err"]
-    print(f"{len(points)} eval points, horizon {args.horizon}s, zero-action baseline disp_err={baseline:.4f}\n")
+    draws_note = f", {args.n_draws} noise draws averaged" if args.n_draws > 1 else ""
+    print(f"{len(points)} eval points, horizon {args.horizon}s{draws_note}, "
+          f"zero-action baseline disp_err={baseline:.4f}\n")
 
     curves = {}
     for name in runs:
@@ -89,7 +96,8 @@ def main():
             if not (ckpt / "model.safetensors").exists():
                 continue
             chunk, fps, cams, ptype = predict_chunks(
-                ckpt, src_ds, points, args.batch_size, args.device, preset, src_fps, point_tasks)
+                ckpt, src_ds, points, args.batch_size, args.device, preset, src_fps, point_tasks,
+                n_draws=args.n_draws)
             if chunk.shape[1] / fps + 1e-6 < args.horizon:
                 continue
             sc = score(to_30hz(chunk, fps, n, src_fps), gt, joints, src_fps)

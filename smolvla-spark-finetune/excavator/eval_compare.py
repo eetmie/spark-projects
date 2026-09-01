@@ -188,6 +188,10 @@ def parse_args():
     p.add_argument("--checkpoint", default="last", help="checkpoint to load (default: last)")
     p.add_argument("--horizons", type=float, nargs="+", default=[1.5, 4.0], help="horizons in seconds")
     p.add_argument("--batch-size", type=int, default=8)
+    p.add_argument("--n-draws", type=int, default=1,
+                   help="average this many flow-matching noise draws per eval point "
+                        "(default 1). Use 4 to compare architectures without charging "
+                        "X-VLA for sampler variance SmolVLA does not have")
     p.add_argument("--device", default="cuda")
     p.add_argument("--out-dir", type=Path, default=None, help="override the preset's sweep dir")
     p.add_argument("--extra-runs", nargs="*", default=[], metavar="LABEL=PATH",
@@ -327,12 +331,27 @@ def run_fps(ckpt, src_fps):
     return src_fps
 
 
-def predict_chunks(ckpt, src_ds, points, batch_size, device, preset, src_fps, point_tasks):
+def predict_chunks(ckpt, src_ds, points, batch_size, device, preset, src_fps, point_tasks,
+                   n_draws=1):
     """Run one model over all eval points. Returns (N, chunk, action_dim) unnormalized
-    actions and the fps its chunk is clocked at."""
-    # SmolVLA's flow-matching sampler draws random noise, so repeated evals of the same
-    # checkpoint differ by ~0.001 disp_err. Seed per model to make the numbers reproducible;
-    # without this the sampling jitter is a meaningful fraction of the gaps between runs.
+    actions and the fps its chunk is clocked at.
+
+    Both architectures here are flow-matching samplers seeded by a random draw, so a
+    single pass scores one sample of a distribution rather than the policy itself. How
+    much that matters is NOT the same for the two: measured on digging_dry2, averaging
+    4 draws moves SmolVLA by -0.4% (its sampler is effectively deterministic) and X-VLA
+    by -18.5%, and pulls X-VLA's move_ratio from 1.131 to 1.043. Scoring both at
+    n_draws=1 therefore charges X-VLA for sampler variance that SmolVLA does not have.
+
+    Default stays 1 so every number recorded before 2026-09-01 still reproduces. Pass
+    --n-draws 4 when the question is "which architecture fits better" rather than "what
+    does one forward pass do". Note that n_draws > 1 is NOT free at deploy time: it costs
+    a full denoise pass each, and on the Orin denoise is 86% of wall clock.
+    """
+    # Seed BEFORE load_policy, exactly where the single-draw version seeded. Model
+    # construction itself consumes the RNG (xavier/normal init runs before the checkpoint
+    # is loaded over it), so seeding after this line would shift the noise draw and
+    # silently move every number recorded before n_draws existed.
     torch.manual_seed(0)
     policy_type, policy = load_policy(ckpt)
     policy.eval().to(device)
@@ -349,21 +368,30 @@ def predict_chunks(ckpt, src_ds, points, batch_size, device, preset, src_fps, po
     if missing:
         raise SystemExit(f"{ckpt} expects {missing}, absent from {preset.src}")
 
-    chunks = []
-    for i in range(0, len(points), batch_size):
-        group = points[i : i + batch_size]
-        items = [src_ds[j] for j in group]
-        state = torch.stack([it["observation.state"] for it in items])
-        if state_blind:
-            state = torch.zeros_like(state)
-        batch = {"observation.state": state, "task": point_tasks[i : i + batch_size]}
-        for key in cam_keys:
-            batch[key] = torch.stack([it[key] for it in items])
-        with torch.no_grad():
-            chunks.append(post(policy.predict_action_chunk(pre(batch))).float().cpu())
+    draws = []
+    for draw in range(n_draws):
+        # Draw 0 deliberately inherits the RNG state left by load_policy above, which is
+        # what the single-draw version sampled from -- so --n-draws 1 reproduces every
+        # earlier number bit for bit. Extra draws get their own seeds.
+        if draw:
+            torch.manual_seed(1000 + draw)
+        chunks = []
+        for i in range(0, len(points), batch_size):
+            group = points[i : i + batch_size]
+            items = [src_ds[j] for j in group]
+            state = torch.stack([it["observation.state"] for it in items])
+            if state_blind:
+                state = torch.zeros_like(state)
+            batch = {"observation.state": state, "task": point_tasks[i : i + batch_size]}
+            for key in cam_keys:
+                batch[key] = torch.stack([it[key] for it in items])
+            with torch.no_grad():
+                chunks.append(post(policy.predict_action_chunk(pre(batch))).float().cpu())
+        draws.append(torch.cat(chunks))
     del policy
     torch.cuda.empty_cache()
-    return torch.cat(chunks).numpy(), fps, cam_keys, policy_type
+    # Average in unnormalized action space, which is where the commands are executed.
+    return torch.stack(draws).mean(0).numpy(), fps, cam_keys, policy_type
 
 
 def to_30hz(chunk, fps, n_samples, src_fps):
@@ -398,6 +426,8 @@ def main():
     points = eval_points(preset, bounds, max_h, src_fps)
     point_tasks = tasks_for_points(preset, bounds, points)
     print(f"source {preset.src.name} @ {src_fps}fps, joints {joints}")
+    if args.n_draws > 1:
+        print(f"averaging {args.n_draws} noise draws per eval point")
     print(f"evaluating on {len(points)} start points from held-out episodes {preset.val_episodes}")
     counts = {t: point_tasks.count(t) for t in sorted(set(point_tasks))}
     print("instructions: " + ", ".join(f"{t!r} x{n}" for t, n in counts.items()) + "\n")
@@ -429,11 +459,13 @@ def main():
             continue
         print(f"[{name}] running inference ...", flush=True)
         chunk, fps, cams, ptype = predict_chunks(
-            ckpt, src_ds, points, args.batch_size, args.device, preset, src_fps, point_tasks)
+            ckpt, src_ds, points, args.batch_size, args.device, preset, src_fps, point_tasks,
+            n_draws=args.n_draws)
         covered = chunk.shape[1] / fps
         cam_short = [c.rsplit(".", 1)[-1] for c in cams]
         print(f"[{name}] {ptype}, cameras {cam_short}, chunk {chunk.shape[1]} @ {fps}fps = {covered:.2f}s")
         results[name] = {"fps": fps, "chunk": int(chunk.shape[1]), "covers_s": covered,
+                         "n_draws": args.n_draws,
                          "cameras": cam_short, "policy": ptype, "horizons": {}}
         for h in args.horizons:
             n = int(round(h * src_fps))

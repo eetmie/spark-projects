@@ -94,6 +94,35 @@ CHUNK=${CHUNK:-50}
 # replans, so a stale plan is never executed to its end. CHUNK=20 NSTEPS=10 at 30 fps =
 # a 0.67 s prediction of which 0.33 s is used.
 NSTEPS=${NSTEPS:-$CHUNK}
+
+# FULL_FT=1 trains the VLM too, which is what X-VLA's own docs prescribe:
+#   "the Vision-Language Model (VLM) must be trained with only 1/10 of the base learning
+#    rate, while all other components use the full LR. This LR ratio is crucial for
+#    achieving strong and stable finetuning performance."
+# That 1/10 is already implemented -- XVLAAdamWConfig puts anything matching "vlm" in a
+# param group at lr*0.1 -- so full finetuning needs only the two freeze flags off.
+#
+# Every run before 2026-09-02 froze both encoders instead. That came from
+# configuration_xvla.py's own docstring ("By default, VLM encoders are frozen and only
+# policy transformer + soft prompts train"), which contradicts BOTH the documentation and
+# its own literal defaults (False). Freezing also made the lr*0.1 group -- the mechanism
+# the docs call crucial -- collect nothing but `model.transformer.vlm_proj`, a policy-side
+# Linear caught by the substring filter, which therefore trained at 1/10 the LR of the
+# transformer it belongs to. Unfreezing fixes that as a side effect.
+#
+# Cost: learnable params go 311M -> 879M and the backward pass adds DaViT + BART.
+FULL_FT=${FULL_FT:-0}
+if [ "$FULL_FT" = "1" ]; then
+  FREEZE_VISION=false; FREEZE_LANGUAGE=false
+else
+  FREEZE_VISION=true;  FREEZE_LANGUAGE=true
+fi
+
+# Soft-prompt warmup. The docs: "Completely matching the official reported performance may
+# require an additional warm-up LR schedule for soft-prompts, which can bring minor
+# improvements." Setting this starts the soft-prompt group at lr*SP_WARMUP and lets the
+# existing warmup schedule bring it up. Empty = the default (no separate warmup).
+SP_WARMUP=${SP_WARMUP:-}
 DTYPE=${DTYPE:-bfloat16}
 SEED=${SEED:-1000}
 SAVE_FREQ=${SAVE_FREQ:-2500}
@@ -209,9 +238,13 @@ train_one() {
     if [ -n "$DECAY" ]; then
       sched+=(--policy.scheduler_decay_steps="$DECAY")
     fi
+    if [ -n "$SP_WARMUP" ]; then
+      sched+=(--policy.optimizer_soft_prompt_warmup_lr_scale="$SP_WARMUP")
+    fi
     echo "[$(date +%H:%M:%S)] === xvla run $name: $repo chunk=$CHUNK/$NSTEPS steps=$STEPS ==="
     echo "[$(date +%H:%M:%S)]     $n_eps episodes, held out: $val_eps"
     echo "[$(date +%H:%M:%S)]     decay_steps=${DECAY:-30000 (policy default, auto-fit to STEPS)}"
+    echo "[$(date +%H:%M:%S)]     full_finetune=$FULL_FT (freeze vision=$FREEZE_VISION language=$FREEZE_LANGUAGE) soft_prompt_warmup=${SP_WARMUP:-none}"
     WANDB_MODE=disabled "$VENV/lerobot-train" \
       --dataset.repo_id="$repo" \
       --dataset.root="$root" \
@@ -224,8 +257,8 @@ train_one() {
       --policy.n_action_steps="$NSTEPS" \
       "${sched[@]}" \
       --policy.dtype="$DTYPE" \
-      --policy.freeze_vision_encoder=true \
-      --policy.freeze_language_encoder=true \
+      --policy.freeze_vision_encoder=$FREEZE_VISION \
+      --policy.freeze_language_encoder=$FREEZE_LANGUAGE \
       --policy.device=cuda \
       --policy.push_to_hub=false \
       --policy.repo_id="local/xvla-digging-$name" \
@@ -256,7 +289,7 @@ RUNS=("$@")
 
 echo "xvla digging sweep start $(date)"
 echo "held-out override: ${VAL_EPISODES:-<derived per run: every 10th from 5>}"
-echo "steps=$STEPS batch=$BATCH chunk=$CHUNK n_action_steps=$NSTEPS dtype=$DTYPE workers=$WORKERS"
+echo "steps=$STEPS batch=$BATCH chunk=$CHUNK n_action_steps=$NSTEPS dtype=$DTYPE workers=$WORKERS full_ft=$FULL_FT"
 echo "norm=$NORM"
 for r in "${RUNS[@]}"; do train_one "$r"; done
 echo "xvla digging sweep done $(date)"
