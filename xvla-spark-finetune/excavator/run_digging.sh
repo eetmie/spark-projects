@@ -8,6 +8,7 @@
 #   bash run_digging.sh              # full-data IR and both-camera runs, sequentially
 #   bash run_digging.sh clean_ir     # cleaned IR data (recommended first real run)
 #   CHUNK=30 bash run_digging.sh clean_ir
+#   CHUNK=20 NSTEPS=10 bash run_digging.sh dry2_ir   # predict 20, execute 10
 #   STEPS=2000 bash run_digging.sh ir
 #
 # This is a SEPARATE pipeline from the SmolVLA one on purpose (the SmolVLA side is still
@@ -44,7 +45,7 @@
 #      with, and it is also what SmolVLA uses — so after this override the two
 #      architectures normalize identically and the comparison has one less confound.
 #
-#  --policy.chunk_size=50 / n_action_steps=50
+#  --policy.chunk_size / n_action_steps (CHUNK / NSTEPS, default 50/50)
 #      X-VLA defaults to 32, which covers only 1.07 s at 30 fps — less than the 1.5 s
 #      scoring horizon, so eval_compare could not score it at all. 50 matches SmolVLA
 #      exactly (1.67 s), which is the whole point. NOTE for deployment: the Orin
@@ -86,6 +87,13 @@ LOGS=$OUT/logs
 STEPS=${STEPS:-20000}
 BATCH=${BATCH:-32}
 CHUNK=${CHUNK:-50}
+# How many of the predicted actions are actually executed before replanning. Defaults to
+# CHUNK (predict N, execute N), which is what every run up to 2026-09-01 did. Setting it
+# lower decouples the two: the policy still learns a CHUNK-long trajectory -- more context
+# to be consistent with -- while the robot commits to only the first NSTEPS of it and
+# replans, so a stale plan is never executed to its end. CHUNK=20 NSTEPS=10 at 30 fps =
+# a 0.67 s prediction of which 0.33 s is used.
+NSTEPS=${NSTEPS:-$CHUNK}
 DTYPE=${DTYPE:-bfloat16}
 SEED=${SEED:-1000}
 SAVE_FREQ=${SAVE_FREQ:-2500}
@@ -93,6 +101,21 @@ WORKERS=${WORKERS:-10}
 LOG_FREQ=${LOG_FREQ:-250}
 SAVE_CHECKPOINT=${SAVE_CHECKPOINT:-true}
 NORM=${NORM:-'{"VISUAL":"IDENTITY","STATE":"MEAN_STD","ACTION":"MEAN_STD"}'}
+
+# scheduler_decay_steps. XVLAConfig defaults this to 30000, and
+# CosineDecayWithWarmupSchedulerConfig.build() only ever scales it DOWN:
+#   if num_training_steps < self.num_decay_steps: ... actual_decay_steps = num_training_steps
+# Below 30000 that auto-fit is exactly what we want -- it compresses warmup AND decay so the
+# cosine lands on the final step (this is why the 10k run annealed all the way to 2.5e-7).
+# Above 30000 nothing scales: the LR reaches the 2.5e-6 floor at step 30000 and every step
+# after that trains at the floor. A 50000-step run would spend its last 20000 steps -- about
+# 11 hours at batch 64 -- going nowhere, and would report a perfectly healthy loss while
+# doing it. So when STEPS exceeds the built-in horizon, match the decay to the run length.
+# Set DECAY explicitly to override (e.g. DECAY=30000 to deliberately reproduce the old shape).
+DECAY=${DECAY:-}
+if [ -z "$DECAY" ] && [ "$STEPS" -gt 30000 ]; then
+  DECAY=$STEPS
+fi
 
 # Local checkpoint dir rather than the `lerobot/xvla-base` repo id: huggingface_hub's
 # downloader stalled twice mid-file on this box (dead at 245-257 MB of 3519 with the
@@ -169,7 +192,9 @@ train_one() {
     # TrainPipelineConfig normally gives the saved checkpoint config precedence over
     # the current command line. Explicitly override the run-length controls: otherwise
     # the 250-step throughput probe resumes with steps=250 and exits immediately when
-    # the user asks for a 20k run. Architecture/data settings stay checkpoint-owned.
+    # the user asks for a 20k run. Architecture/data settings stay checkpoint-owned --
+    # including scheduler_decay_steps, so DECAY has NO effect here. A resume cannot be used
+    # to extend a run past its original decay horizon; start a fresh run instead.
     WANDB_MODE=disabled "$VENV/lerobot-train" \
       --config_path="$dir/checkpoints/last/pretrained_model/train_config.json" \
       --resume=true \
@@ -180,8 +205,13 @@ train_one() {
       --save_freq="$SAVE_FREQ" \
       --save_checkpoint="$SAVE_CHECKPOINT" >> "$log" 2>&1
   else
-    echo "[$(date +%H:%M:%S)] === xvla run $name: $repo chunk=$CHUNK steps=$STEPS ==="
+    local -a sched=()
+    if [ -n "$DECAY" ]; then
+      sched+=(--policy.scheduler_decay_steps="$DECAY")
+    fi
+    echo "[$(date +%H:%M:%S)] === xvla run $name: $repo chunk=$CHUNK/$NSTEPS steps=$STEPS ==="
     echo "[$(date +%H:%M:%S)]     $n_eps episodes, held out: $val_eps"
+    echo "[$(date +%H:%M:%S)]     decay_steps=${DECAY:-30000 (policy default, auto-fit to STEPS)}"
     WANDB_MODE=disabled "$VENV/lerobot-train" \
       --dataset.repo_id="$repo" \
       --dataset.root="$root" \
@@ -191,7 +221,8 @@ train_one() {
       --policy.action_mode=auto \
       --policy.normalization_mapping="$NORM" \
       --policy.chunk_size="$CHUNK" \
-      --policy.n_action_steps="$CHUNK" \
+      --policy.n_action_steps="$NSTEPS" \
+      "${sched[@]}" \
       --policy.dtype="$DTYPE" \
       --policy.freeze_vision_encoder=true \
       --policy.freeze_language_encoder=true \
@@ -225,7 +256,7 @@ RUNS=("$@")
 
 echo "xvla digging sweep start $(date)"
 echo "held-out override: ${VAL_EPISODES:-<derived per run: every 10th from 5>}"
-echo "steps=$STEPS batch=$BATCH chunk=$CHUNK dtype=$DTYPE workers=$WORKERS"
+echo "steps=$STEPS batch=$BATCH chunk=$CHUNK n_action_steps=$NSTEPS dtype=$DTYPE workers=$WORKERS"
 echo "norm=$NORM"
 for r in "${RUNS[@]}"; do train_one "$r"; done
 echo "xvla digging sweep done $(date)"
