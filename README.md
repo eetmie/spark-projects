@@ -27,15 +27,22 @@ inference/TensorRT runs downstream on Jetson Orin Nano, not on the Spark. Verifi
 SmolVLA CUDA forward + 1-step LoRA smoke test + ONNX export with PyTorch-vs-ONNX parity
 (max_abs_diff ~2.6e-6, cosine ~1.0). See `smolvla-spark-finetune/STATUS.md`.
 
+### [`evo1-spark-finetune/`](evo1-spark-finetune/) — EVO1 Spark export + Orin bootstrap
+Pinned LeRobot 0.6.1 / InternVL3-1B-hf setup, 11-graph split exporter, native fixture,
+and mixed-FP16 conversion. The non-deployable random-head bootstrap builds as ten TRT
+engines plus a CPU embedding graph on Orin Nano Super: final-action cosine 0.999991,
+~0.56 s per 32-step chunk, and 4.75 GB peak RSS.
+
 ### [`scene-reconstruction/`](scene-reconstruction/) — video → Gaussian splat → Isaac Sim
 Smartphone video -> COLMAP -> 3DGRUT raw Gaussian splat -> SuperSplat cleanup/compression -> Isaac Sim NuRec USDZ on DGX Spark. See `scene-reconstruction/README.md`.
 
-### [`orin-nano/`](orin-nano/) — Jetson Orin Nano deploy side (RealSense + SmolVLA TensorRT)
+### [`orin-nano/`](orin-nano/) — Jetson Orin Nano deploy side (RealSense + VLA TensorRT)
 The deploy counterpart to the Spark playbooks, on a Jetson **Orin Nano Super** (**JetPack 7.2**,
 stock kernel). `system/` sets MAXN_SUPER + swap, `realsense-rgb/` builds librealsense for the D435i
 RGB stream (RSUSB, no kernel patches), and `smolvla-runtime/` runs the SmolVLA ONNX exported by
 `smolvla-spark-finetune/` through **ONNX Runtime + the TensorRT execution provider** (FP16, engine-
-cached; camera → model → action chunk; no robot control yet). The engine cache is built on-device —
+cached; camera → model → action chunk; no robot control yet). `evo1-runtime/` adds the
+non-deployable EVO1 parity/memory harness. Engine caches are always built on-device —
 never copied from the Spark.
 
 ## Notes

@@ -1,0 +1,59 @@
+{
+  "date": "2026-09-02",
+  "device": "Jetson Orin Nano Super 8 GB",
+  "power_mode": "MAXN_SUPER",
+  "jetpack": "7.2",
+  "onnxruntime": "1.24.0",
+  "precision": "mixed FP16 weights, FP32 graph I/O",
+  "bundle": {
+    "deployable": false,
+    "random_action_head": true,
+    "graphs": 11,
+    "tensorrt_engines": 10,
+    "cpu_graphs": 1,
+    "onnx_bytes": 1827271491,
+    "engine_cache_gb": 1.3
+  },
+  "engine_builds": [
+    {"graph": "vision_0", "load_s": 49.612, "first_run_s": 0.046, "peak_rss_gb": 4.527, "minimum_available_gb": 3.051},
+    {"graph": "vision_1", "load_s": 8.923, "first_run_s": 0.037, "peak_rss_gb": 3.564, "minimum_available_gb": 3.649},
+    {"graph": "vision_2", "load_s": 8.368, "first_run_s": 0.038, "peak_rss_gb": 3.506, "minimum_available_gb": 3.648},
+    {"graph": "vision_3", "load_s": 29.585, "first_run_s": 0.020, "peak_rss_gb": 3.691, "minimum_available_gb": 3.400},
+    {"graph": "language_0", "load_s": 43.896, "first_run_s": 0.018, "peak_rss_gb": 4.579, "minimum_available_gb": 2.995},
+    {"graph": "language_1", "load_s": 11.936, "first_run_s": 0.018, "peak_rss_gb": 3.617, "minimum_available_gb": 3.236},
+    {"graph": "language_2", "load_s": 7.390, "first_run_s": 0.010, "peak_rss_gb": 2.779, "minimum_available_gb": 4.198},
+    {"graph": "action_context", "load_s": 7.817, "first_run_s": 0.020, "peak_rss_gb": 2.637, "minimum_available_gb": 5.006},
+    {"graph": "action_step", "load_s": 52.430, "first_run_s": 0.020, "peak_rss_gb": 3.945, "minimum_available_gb": 3.661},
+    {"graph": "action_output", "load_s": 12.379, "first_run_s": 0.007, "peak_rss_gb": 3.117, "minimum_available_gb": 3.689}
+  ],
+  "spark_fp32_split_parity": {
+    "backend": "ONNX Runtime CPU",
+    "reference": "native LeRobot 0.6.1 FP32 CUDA",
+    "status": "PASS",
+    "cosine_threshold": 0.999999,
+    "total_s": 6.049931,
+    "parity": {
+      "vision": {"cosine": 0.999999999946, "max_abs": 0.000280306},
+      "fused_valid": {"cosine": 0.999999999922, "max_abs": 0.007914066},
+      "action": {"cosine": 0.999999999999, "max_abs": 0.000003472}
+    }
+  },
+  "resident_fixture_run": {
+    "status": "PASS",
+    "cosine_threshold": 0.999,
+    "peak_rss_gb": 4.754,
+    "available_after_run_gb": 2.589,
+    "total_s": 0.561193,
+    "vision_s": 0.160298,
+    "language_with_cpu_embedding_s": 0.085403,
+    "action_context_s": 0.017913,
+    "action_step_x32_s": 0.244550,
+    "action_output_x32_s": 0.053029,
+    "parity": {
+      "vision": {"cosine": 0.9996058195, "max_abs": 1.0862675},
+      "fused_valid": {"cosine": 0.9995459235, "max_abs": 18.8792839},
+      "action": {"cosine": 0.9999909516, "max_abs": 0.00747218},
+      "fused_all_diagnostic": {"cosine": 0.9984481564, "max_abs": 18.8792839}
+    }
+  }
+}

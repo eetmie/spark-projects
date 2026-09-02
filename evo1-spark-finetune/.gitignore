@@ -1,0 +1,7 @@
+# Local environments, model artifacts, and generated exports stay out of the recipe repo.
+.venv/
+models/
+exports/
+outputs/
+__pycache__/
+*.pyc

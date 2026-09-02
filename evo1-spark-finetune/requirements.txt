@@ -1,0 +1,23 @@
+# EVO1 / LeRobot host-side bring-up on NVIDIA DGX Spark (GB10, aarch64, CUDA 13).
+# Tested with Python 3.12. Install through setup.sh so the CUDA 13 PyTorch index is used.
+
+# EVO1 first appears in LeRobot 0.6.0. Use 0.6.1: it includes the EVO1 normalization-
+# processor repair and correct FlashAttention availability check from the patch release.
+lerobot[training,evo1]==0.6.1
+
+# LeRobot 0.6.1 requires torch >=2.7,<2.12 and torchvision >=0.22,<0.27.
+# These are the matching CUDA 13 wheels available for GB10/aarch64.
+torch==2.11.0+cu130
+torchvision==0.26.0+cu130
+torchcodec==0.11.1+cu130
+
+# Reproduce the LeRobot 0.6.1 lock's model/data stack instead of accepting moving ranges.
+transformers==5.5.4
+huggingface-hub==1.26.0
+datasets==4.8.5
+numpy==2.2.6
+
+# Spark export and CPU parity tools. TensorRT/ORT-GPU belongs to the Orin environment.
+onnx==1.22.0
+onnxruntime==1.28.0
+onnxscript==0.7.1
