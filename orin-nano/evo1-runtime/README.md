@@ -26,12 +26,17 @@ python prebuild.py --bundle bundle --cache trt_cache --precision fp16
 
 # Compares every stage with a native LeRobot 0.6.1 FP32-CUDA fixture emitted on Spark.
 python run_fixture.py --bundle bundle --cache trt_cache --precision fp16
+
+# Recommended cached benchmark: keep action K/V and hidden output on the GPU.
+TRT_DROP_CUDA_EP=1 python benchmark.py \
+  --bundle bundle --cache trt_cache --precision fp16 \
+  --embedding-device cpu --device-resident-action --steps 32
 ```
 
 Engine builds are deliberately isolated. Each graph gets its own child process so the
 TensorRT builder returns its unified memory before the next graph starts. ORT graph
 fusions are disabled, matching the X-VLA workaround for FP16 `com.microsoft.Gelu`
-fallback failures. The token-embedding graph always uses CPU EP; every other graph uses
+fallback failures. The token-embedding graph defaults to CPU EP; every other graph uses
 TensorRT, CUDA fallback, then CPU fallback during the parity run.
 
 This directory has no live camera or actuator entry point. Adding those belongs after a
@@ -58,3 +63,17 @@ pairs. Parity against native LeRobot 0.6.1 FP32 CUDA is:
 The parity gate excludes the 51 padded language query positions because
 `action_context` masks them as keys; their full-tensor cosine is still emitted as a
 diagnostic (`0.998448`). The final action passes the 0.999 threshold by a wide margin.
+
+## Performance follow-up (2026-09-03)
+
+Twenty-run cached measurements supersede the single-run latency above. The baseline
+32-step split path averages 390.61 ms (2.56 Hz). Device-resident action I/O binding
+averages 294.85 ms (3.39 Hz), a 24.5% reduction, while producing exactly the same output
+as the ordinary split path and increasing peak RSS by only 33 MB. It is the recommended
+runtime profile.
+
+An optional fused action graph reaches 287.12 ms (3.48 Hz) with device residency, but
+uses about 171 MB more peak RSS than the recommended split profile. CUDA token embedding
+is rejected because its negligible latency gain costs roughly 0.48 GB. See the complete
+[performance sweep and raw reports](notes/performance.md), including the 10/16/32/50
+solver-step comparison and checkpoint-specific cautions.

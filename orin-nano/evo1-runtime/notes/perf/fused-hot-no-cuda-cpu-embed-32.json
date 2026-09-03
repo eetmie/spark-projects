@@ -1,0 +1,92 @@
+{
+  "action_vs_native_32_step": {
+    "cosine": 0.999990940074147,
+    "max_abs": 0.007675349712371826,
+    "mean_abs": 0.0020113714058728267
+  },
+  "latency_ms": {
+    "achieved_hz": 2.6270755688000316,
+    "max": 391.9950429999517,
+    "mean": 380.65140260002863,
+    "min": 377.7894869999727,
+    "p50": 380.3090074998181,
+    "p95": 383.1055348499376
+  },
+  "memory": {
+    "after_benchmark": {
+      "available_gb": 2.641,
+      "peak_rss_gb": 4.937
+    },
+    "after_load": {
+      "available_gb": 2.827,
+      "peak_rss_gb": 4.937
+    },
+    "before": {
+      "available_gb": 6.326,
+      "peak_rss_gb": 0.045
+    },
+    "benchmark_low_water": {
+      "baseline_available_gb": 2.589,
+      "consumed_gb": 0.0,
+      "minimum_available_gb": 2.589
+    }
+  },
+  "providers": {
+    "action_context": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "action_hot": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "language_0": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "language_1": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "language_2": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "token_embedding": [
+      "CPUExecutionProvider"
+    ],
+    "vision_0": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "vision_1": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "vision_2": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "vision_3": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ]
+  },
+  "stage_mean_ms": {
+    "action_context": 6.304327900033968,
+    "action_hot_x32": 230.22197375037194,
+    "language_with_cpu_embedding": 29.63092800000595,
+    "total": 378.5548476003896,
+    "vision": 112.39761794997776
+  },
+  "status": "PASS",
+  "variant": {
+    "action_hot": "variants/action-hot/action_hot.onnx",
+    "cuda_fallback": false,
+    "embedding_device": "cpu",
+    "precision": "fp16",
+    "runs": 20,
+    "steps": 32,
+    "warmup": 3
+  }
+}

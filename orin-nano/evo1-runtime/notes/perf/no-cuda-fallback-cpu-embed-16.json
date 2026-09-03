@@ -1,0 +1,96 @@
+{
+  "action_vs_native_32_step": {
+    "cosine": 0.9999915323989559,
+    "max_abs": 0.007809780538082123,
+    "mean_abs": 0.0019649475863358625
+  },
+  "latency_ms": {
+    "achieved_hz": 3.720732639157604,
+    "max": 270.65926999966905,
+    "mean": 268.7642722499959,
+    "min": 266.30684400015525,
+    "p50": 269.0461284998946,
+    "p95": 270.46422264995726
+  },
+  "memory": {
+    "after_benchmark": {
+      "available_gb": 2.56,
+      "peak_rss_gb": 4.724
+    },
+    "after_load": {
+      "available_gb": 2.848,
+      "peak_rss_gb": 4.714
+    },
+    "before": {
+      "available_gb": 6.087,
+      "peak_rss_gb": 0.044
+    },
+    "benchmark_low_water": {
+      "baseline_available_gb": 2.557,
+      "consumed_gb": 0.0,
+      "minimum_available_gb": 2.557
+    }
+  },
+  "providers": {
+    "action_context": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "action_output": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "action_step": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "language_0": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "language_1": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "language_2": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "token_embedding": [
+      "CPUExecutionProvider"
+    ],
+    "vision_0": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "vision_1": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "vision_2": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "vision_3": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ]
+  },
+  "stage_mean_ms": {
+    "action_context": 6.264953250115468,
+    "action_output_x16": 19.028312700174865,
+    "action_step_x16": 101.1899023501428,
+    "language_with_cpu_embedding": 28.838297399988733,
+    "total": 267.3002979004423,
+    "vision": 111.9788322000204
+  },
+  "status": "PASS",
+  "variant": {
+    "cuda_fallback": false,
+    "embedding_device": "cpu",
+    "precision": "fp16",
+    "runs": 20,
+    "steps": 16,
+    "warmup": 3
+  }
+}

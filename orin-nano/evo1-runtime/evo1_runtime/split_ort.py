@@ -137,6 +137,9 @@ class Evo1SplitPolicy:
         bundle_dir: str | Path,
         cache_dir: str | Path,
         precision: str = "fp16",
+        embedding_device: str = "cpu",
+        action_hot: str | Path | None = None,
+        device_resident_action: bool = False,
         *,
         allow_bootstrap: bool = False,
     ) -> None:
@@ -146,12 +149,20 @@ class Evo1SplitPolicy:
         self.bundle = verify_bundle(self.root)
         self.cache_dir = Path(cache_dir).resolve()
         self.precision = precision
+        if embedding_device not in {"cpu", "cuda"}:
+            raise ValueError("embedding_device must be 'cpu' or 'cuda'")
+        self.embedding_device = embedding_device
+        self.action_hot_path = Path(action_hot).resolve() if action_hot else None
+        self.device_resident_action = bool(device_resident_action)
         self.graphs = {graph["name"]: graph for graph in self.bundle["graphs"]}
         self.load_timings_s: dict[str, float] = {}
         self.sessions: dict[str, ort.InferenceSession] = {}
 
-        for name in ("token_embedding",):
-            self._load(name, cpu_only=True)
+        self._load(
+            "token_embedding",
+            cpu_only=embedding_device == "cpu",
+            cuda_only=embedding_device == "cuda",
+        )
         for name in (
             "vision_0",
             "vision_1",
@@ -161,16 +172,58 @@ class Evo1SplitPolicy:
             "language_1",
             "language_2",
             "action_context",
-            "action_step",
-            "action_output",
         ):
             self._load(name, cpu_only=False)
+        if self.action_hot_path:
+            self._load(
+                "action_hot", cpu_only=False, onnx_path=self.action_hot_path
+            )
+        else:
+            self._load("action_step", cpu_only=False)
+            self._load("action_output", cpu_only=False)
+        if self.device_resident_action:
+            action_names = (
+                ("action_hot",)
+                if self.action_hot_path
+                else ("action_step", "action_output")
+            )
+            gpu = {"TensorrtExecutionProvider", "CUDAExecutionProvider"}
+            if not all(
+                gpu.intersection(self.sessions[name].get_providers())
+                for name in action_names
+            ):
+                raise ValueError("device-resident action requires GPU action sessions")
+            self._action_io = {
+                name: self.sessions[name].io_binding() for name in action_names
+            }
 
-    def _load(self, name: str, *, cpu_only: bool) -> None:
-        path = self.root / self.graphs[name]["file"]
+    def _load(
+        self,
+        name: str,
+        *,
+        cpu_only: bool,
+        cuda_only: bool = False,
+        onnx_path: str | Path | None = None,
+    ) -> None:
+        path = (
+            Path(onnx_path).resolve()
+            if onnx_path
+            else self.root / self.graphs[name]["file"]
+        )
         started = time.perf_counter()
         if cpu_only:
             session = _cpu_session(path)
+        elif cuda_only:
+            if "CUDAExecutionProvider" not in ort.get_available_providers():
+                raise RuntimeError("CUDA embedding requested but CUDA EP is unavailable")
+            session = ort.InferenceSession(
+                str(path),
+                sess_options=make_session_options(),
+                providers=[
+                    ("CUDAExecutionProvider", {"device_id": 0}),
+                    "CPUExecutionProvider",
+                ],
+            )
         else:
             session = ort.InferenceSession(
                 str(path),
@@ -196,7 +249,9 @@ class Evo1SplitPolicy:
         assert value is not None
         return value
 
-    def run_fixture(self, fixture: "np.lib.npyio.NpzFile") -> dict:
+    def run_fixture(
+        self, fixture: "np.lib.npyio.NpzFile", steps: int | None = None
+    ) -> dict:
         """Run the exact native-reference inputs through all eleven split graphs."""
         timings: dict[str, float] = {}
 
@@ -228,7 +283,9 @@ class Evo1SplitPolicy:
                 "causal_mask": np.asarray(fixture["causal_mask"], dtype=np.float32),
             },
         )
-        timings["language_with_cpu_embedding"] = time.perf_counter() - started
+        timings[f"language_with_{self.embedding_device}_embedding"] = (
+            time.perf_counter() - started
+        )
 
         started = time.perf_counter()
         cached = self.sessions["action_context"].run(
@@ -242,12 +299,27 @@ class Evo1SplitPolicy:
         timings["action_context"] = time.perf_counter() - started
 
         action = np.asarray(fixture["initial_noise"], dtype=np.float32).copy()
-        steps = int(self.bundle["num_inference_timesteps"])
-        step_inputs = [item.name for item in self.sessions["action_step"].get_inputs()]
+        steps = int(self.bundle["num_inference_timesteps"] if steps is None else steps)
+        if steps <= 0:
+            raise ValueError("steps must be positive")
+        hot_name = "action_hot" if "action_hot" in self.sessions else "action_step"
+        step_inputs = [item.name for item in self.sessions[hot_name].get_inputs()]
         cached_names = step_inputs[2:]
         if len(cached_names) != len(cached):
             raise ValueError("action cache graph contract does not match action step")
-        cached_feed = dict(zip(cached_names, cached, strict=True))
+        if self.device_resident_action:
+            uploaded = time.perf_counter()
+            cached_device = {
+                name: ort.OrtValue.ortvalue_from_numpy(
+                    np.ascontiguousarray(value), "cuda", 0
+                )
+                for name, value in zip(cached_names, cached, strict=True)
+            }
+            timings["action_cache_upload"] = time.perf_counter() - uploaded
+            cached_feed = None
+        else:
+            cached_device = None
+            cached_feed = dict(zip(cached_names, cached, strict=True))
 
         step_total = 0.0
         output_total = 0.0
@@ -256,19 +328,54 @@ class Evo1SplitPolicy:
                 [min(int((index / steps) * 999), 999)], dtype=np.int64
             )
             started = time.perf_counter()
-            action_hidden = self.sessions["action_step"].run(
-                None,
-                {"action": action, "time_index": time_index, **cached_feed},
-            )[0]
-            step_total += time.perf_counter() - started
-            started = time.perf_counter()
-            velocity = self.sessions["action_output"].run(
-                None, {"action_hidden": action_hidden}
-            )[0]
-            output_total += time.perf_counter() - started
+            if self.device_resident_action:
+                io = self._action_io[hot_name]
+                io.clear_binding_inputs()
+                io.clear_binding_outputs()
+                io.bind_cpu_input("action", np.ascontiguousarray(action))
+                io.bind_cpu_input("time_index", time_index)
+                for name, value in cached_device.items():
+                    io.bind_ortvalue_input(name, value)
+                output_device = "cpu" if hot_name == "action_hot" else "cuda"
+                io.bind_output(
+                    self.sessions[hot_name].get_outputs()[0].name, output_device, 0
+                )
+                self.sessions[hot_name].run_with_iobinding(io)
+                first_output = io.get_outputs()[0]
+                step_total += time.perf_counter() - started
+                if hot_name == "action_hot":
+                    velocity = first_output.numpy()
+                else:
+                    started = time.perf_counter()
+                    output_io = self._action_io["action_output"]
+                    output_io.clear_binding_inputs()
+                    output_io.clear_binding_outputs()
+                    output_io.bind_ortvalue_input("action_hidden", first_output)
+                    output_io.bind_output("velocity", "cpu", 0)
+                    self.sessions["action_output"].run_with_iobinding(output_io)
+                    velocity = output_io.get_outputs()[0].numpy()
+                    output_total += time.perf_counter() - started
+            elif hot_name == "action_hot":
+                velocity = self.sessions[hot_name].run(
+                    None,
+                    {"action": action, "time_index": time_index, **cached_feed},
+                )[0]
+                step_total += time.perf_counter() - started
+            else:
+                action_hidden = self.sessions[hot_name].run(
+                    None,
+                    {"action": action, "time_index": time_index, **cached_feed},
+                )[0]
+                step_total += time.perf_counter() - started
+                started = time.perf_counter()
+                velocity = self.sessions["action_output"].run(
+                    None, {"action_hidden": action_hidden}
+                )[0]
+                output_total += time.perf_counter() - started
             action += velocity / steps
-        timings["action_step_x32"] = step_total
-        timings["action_output_x32"] = output_total
+        timings[f"{hot_name}_x{steps}"] = step_total
+        if hot_name == "action_step":
+            timings[f"action_output_x{steps}"] = output_total
         timings["total"] = sum(timings.values())
         return {
             "vision": image_features,

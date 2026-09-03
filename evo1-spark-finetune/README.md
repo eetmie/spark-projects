@@ -41,6 +41,12 @@ LeRobot `PreTrainedPolicy` directories. The current known LeRobot-format referen
 checkpoint is `zuoxingdong/evo1_libero`, but it is LIBERO-specific and is used here
 only as an architecture/profile reference.
 
+For a pretrained transfer initializer, the current recommendation is
+`MINT-SJTU/Evo1_RoboTwin2_clean`; its broader 50-task training is a better fit than the
+6-joint SO100 example unless the target robot is actually SO100/SO101. See the
+[checkpoint candidate assessment](notes/checkpoint_candidates.md), including a strict
+LeRobot 0.6.1 conversion proof.
+
 ## Setup
 
 ```bash
@@ -81,6 +87,11 @@ The profiler reads only a safetensors JSON header, never tensor payloads:
 It supports both raw InternVL3 and LeRobot EVO1 key layouts. For a complete trained EVO1
 checkpoint it prints component sizes and the proposed ten-TRT-engine plus CPU-embedding
 profile under the existing 100 M parameter Orin build budget.
+
+Original MINT DeepSpeed checkpoints can be audited and converted to LeRobot's native-HF
+state-dictionary namespace with `tools/convert_mint_checkpoint.py`. This converts weights
+only; the target feature contract and normalization processors must still be packaged and
+validated before deployment.
 
 ## Training handoff
 
@@ -133,6 +144,12 @@ to the Jetson, build each engine in an isolated subprocess, and run the included
   exact (cosine 0.999999999999, max abs 3.47e-6) against the native CUDA fixture.
 - All ten FP16 TensorRT engines build on the Orin Nano Super; cache size is 1.3 GB.
 - Full Orin parity passes at cosine 0.999606 vision, 0.999546 valid fused tokens, and
-  0.999991 final action. A cached 32-step chunk takes 0.56 s and peaks at 4.75 GB RSS.
+  0.999991 final action.
+- Device-resident action I/O binding reduces a cached 32-step chunk from 390.61 ms to
+  294.85 ms (24.5%) at 4.77 GB peak RSS with identical output. See the
+  [Orin performance sweep](../orin-nano/evo1-runtime/notes/performance.md).
+- The pinned RoboTwin checkpoint converts to all 728 LeRobot 0.6.1 tensors with exact
+  key/shape coverage and passes a strict serialized load.
 - Remaining deployment blocker: train/obtain a real LeRobot EVO1 policy checkpoint. The
-  deterministic random-head bootstrap is explicitly marked `deployable: false`.
+  selected checkpoint still needs processors, native-to-converted output parity, and a
+  target-embodiment task-quality gate. The random-head bootstrap remains `deployable: false`.

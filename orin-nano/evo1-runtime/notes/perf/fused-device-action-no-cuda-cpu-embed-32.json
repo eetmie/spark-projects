@@ -1,0 +1,94 @@
+{
+  "action_vs_native_32_step": {
+    "cosine": 0.999990940074147,
+    "max_abs": 0.007675349712371826,
+    "mean_abs": 0.0020113714058728267
+  },
+  "latency_ms": {
+    "achieved_hz": 3.4828636004076547,
+    "max": 294.45496099970114,
+    "mean": 287.1200583000018,
+    "min": 282.5474490000488,
+    "p50": 286.375304500325,
+    "p95": 291.57141270009106
+  },
+  "memory": {
+    "after_benchmark": {
+      "available_gb": 2.579,
+      "peak_rss_gb": 4.941
+    },
+    "after_load": {
+      "available_gb": 2.949,
+      "peak_rss_gb": 4.941
+    },
+    "before": {
+      "available_gb": 6.089,
+      "peak_rss_gb": 0.044
+    },
+    "benchmark_low_water": {
+      "baseline_available_gb": 2.573,
+      "consumed_gb": 0.0,
+      "minimum_available_gb": 2.573
+    }
+  },
+  "providers": {
+    "action_context": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "action_hot": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "language_0": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "language_1": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "language_2": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "token_embedding": [
+      "CPUExecutionProvider"
+    ],
+    "vision_0": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "vision_1": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "vision_2": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "vision_3": [
+      "TensorrtExecutionProvider",
+      "CPUExecutionProvider"
+    ]
+  },
+  "stage_mean_ms": {
+    "action_cache_upload": 4.261644500002149,
+    "action_context": 6.292941750029968,
+    "action_hot_x32": 133.52805990007255,
+    "language_with_cpu_embedding": 28.15224930002387,
+    "total": 285.26837160013656,
+    "vision": 113.03347615000803
+  },
+  "status": "PASS",
+  "variant": {
+    "action_hot": "variants/action-hot/action_hot.onnx",
+    "cuda_fallback": false,
+    "device_resident_action": true,
+    "embedding_device": "cpu",
+    "precision": "fp16",
+    "runs": 20,
+    "steps": 32,
+    "warmup": 3
+  }
+}

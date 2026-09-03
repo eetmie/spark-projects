@@ -1,0 +1,106 @@
+{
+  "action_vs_native_32_step": {
+    "cosine": 0.9999909515691631,
+    "max_abs": 0.00747217983007431,
+    "mean_abs": 0.002012892951024696
+  },
+  "latency_ms": {
+    "achieved_hz": 2.5600732356258598,
+    "max": 401.1930689998735,
+    "mean": 390.61382545000924,
+    "min": 385.9030360003999,
+    "p50": 389.9652934999267,
+    "p95": 392.91822699997283
+  },
+  "memory": {
+    "after_benchmark": {
+      "available_gb": 2.459,
+      "peak_rss_gb": 4.737
+    },
+    "after_load": {
+      "available_gb": 2.793,
+      "peak_rss_gb": 4.737
+    },
+    "before": {
+      "available_gb": 6.028,
+      "peak_rss_gb": 0.046
+    },
+    "benchmark_low_water": {
+      "baseline_available_gb": 2.45,
+      "consumed_gb": 0.0,
+      "minimum_available_gb": 2.45
+    }
+  },
+  "providers": {
+    "action_context": [
+      "TensorrtExecutionProvider",
+      "CUDAExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "action_output": [
+      "TensorrtExecutionProvider",
+      "CUDAExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "action_step": [
+      "TensorrtExecutionProvider",
+      "CUDAExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "language_0": [
+      "TensorrtExecutionProvider",
+      "CUDAExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "language_1": [
+      "TensorrtExecutionProvider",
+      "CUDAExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "language_2": [
+      "TensorrtExecutionProvider",
+      "CUDAExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "token_embedding": [
+      "CPUExecutionProvider"
+    ],
+    "vision_0": [
+      "TensorrtExecutionProvider",
+      "CUDAExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "vision_1": [
+      "TensorrtExecutionProvider",
+      "CUDAExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "vision_2": [
+      "TensorrtExecutionProvider",
+      "CUDAExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "vision_3": [
+      "TensorrtExecutionProvider",
+      "CUDAExecutionProvider",
+      "CPUExecutionProvider"
+    ]
+  },
+  "stage_mean_ms": {
+    "action_context": 6.715942000028008,
+    "action_output_x32": 37.91916470031538,
+    "action_step_x32": 202.91420069993364,
+    "language_with_cpu_embedding": 29.30911479995757,
+    "total": 388.4396033002531,
+    "vision": 111.58118110001851
+  },
+  "status": "PASS",
+  "variant": {
+    "cuda_fallback": true,
+    "embedding_device": "cpu",
+    "precision": "fp16",
+    "runs": 20,
+    "steps": 32,
+    "warmup": 3
+  }
+}
