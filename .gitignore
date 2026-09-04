@@ -27,7 +27,11 @@ colmap_output/
 # Caches, envs, build
 .cache/
 .venv/
+# the two shared pipeline envs (lerobot 0.5.1 / 0.6.1)
+.venv-*/
 venv/
+*.egg-info/
+__pycache__/
 __pycache__/
 *.pyc
 *.egg-info/

@@ -1,0 +1,22 @@
+[project]
+name = "vla-common"
+version = "0.1.0"
+description = "Shared plumbing for the LeRobot VLA -> split ONNX -> Orin Nano pipeline"
+requires-python = ">=3.12"
+
+# Deliberately NO pins on torch/lerobot/transformers. This package is installed into
+# BOTH pipeline environments — the lerobot 0.5.1 / torch 2.12 comparison venv that
+# smolvla and xvla fine-tune in, and the lerobot 0.6.1 / torch 2.11 venv that evo1
+# and the X-VLA export use. Anything version-sensitive belongs in a model playbook,
+# not here. `onnx` is imported lazily inside the functions that need it.
+dependencies = []
+
+[project.optional-dependencies]
+dataset = ["pandas", "numpy"]   # only vla_common.dataset needs these
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["vla_common*"]

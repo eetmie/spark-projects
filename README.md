@@ -21,22 +21,16 @@ openpi π0.5 (Physical Intelligence) Vision-Language-Action inference, BF16 base
 Full pipeline: JAX→PyTorch convert → ONNX (ModelOpt) → trtexec engine → benchmark.
 See `pi05-spark-inference/notes/findings.md` and `RUNBOOK.md`.
 
-### [`smolvla-spark-finetune/`](smolvla-spark-finetune/) — SmolVLA fine-tune + ONNX export on GB10
-Fine-tune SmolVLA with LeRobot on GB10 and export a valid ONNX (parity-checked). Actual
-inference/TensorRT runs downstream on Jetson Orin Nano, not on the Spark. Verified on GB10:
-SmolVLA CUDA forward + 1-step LoRA smoke test + ONNX export with PyTorch-vs-ONNX parity
-(max_abs_diff ~2.6e-6, cosine ~1.0). See `smolvla-spark-finetune/STATUS.md`.
+### [`vla-onnx/`](vla-onnx/) — LeRobot VLA → split ONNX → Orin Nano
+One pipeline, three models: **SmolVLA 450 M**, **X-VLA 0.9 B**, **EVO1 775 M**. Fine-tune on
+GB10, cut into split ONNX graphs the 8 GB Orin can actually build engines for, verify against
+PyTorch, ship a bundle. `common/` holds the shared plumbing (manifest, ONNX validation,
+provenance, FP16 recipe, dataset reshaping); each model keeps its own graph-cutting wrappers,
+which are ~5% similar to each other because the cut follows the architecture.
 
-### [`evo1-spark-finetune/`](evo1-spark-finetune/) — EVO1 Spark export + Orin bootstrap
-Pinned LeRobot 0.6.1 / InternVL3-1B-hf setup, 11-graph split exporter, native fixture,
-and mixed-FP16 conversion. The non-deployable random-head bootstrap builds as ten TRT
-engines plus a CPU embedding graph on Orin Nano Super: final-action cosine 0.999991,
-~0.56 s per 32-step chunk, and 4.75 GB peak RSS.
-
-### [`xvla-spark-finetune/`](xvla-spark-finetune/) — X-VLA-0.9B fine-tune + split export
-Full fine-tune of X-VLA on the excavator data, plus the budget-driven split exporter,
-parity guard and bundle contract. Full-finetune beats a frozen-encoder run by ~14 %.
-The 8 GB fit measurements that motivated the split are in `notes/fit-on-8gb.md`.
+Two environments on purpose — lerobot 0.5.1/torch 2.12 for the SmolVLA↔X-VLA comparison,
+0.6.1/torch 2.11 for EVO1 and the X-VLA export. They are mutually exclusive pins.
+See [`vla-onnx/README.md`](vla-onnx/README.md).
 
 ### [`scene-reconstruction/`](scene-reconstruction/) — video → Gaussian splat → Isaac Sim
 (basically deprecated since Spirula Studio exists. I only use the usd_export from here!)
