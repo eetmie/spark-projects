@@ -23,10 +23,8 @@ See `pi05-spark-inference/notes/findings.md` and `RUNBOOK.md`.
 
 ### [`vla-onnx/`](vla-onnx/) — LeRobot VLA → split ONNX → Orin Nano
 One pipeline, three models: **SmolVLA 450 M**, **X-VLA 0.9 B**, **EVO1 775 M**. Fine-tune on
-GB10, cut into split ONNX graphs the 8 GB Orin can actually build engines for, verify against
-PyTorch, ship a bundle. `common/` holds the shared plumbing (manifest, ONNX validation,
-provenance, FP16 recipe, dataset reshaping); each model keeps its own graph-cutting wrappers,
-which are ~5% similar to each other because the cut follows the architecture.
+GB10, cut into split ONNX graphs the 8 GB Orin can actually build engines for. Verify against
+PyTorch baseline.
 
 Two environments on purpose — lerobot 0.5.1/torch 2.12 for the SmolVLA↔X-VLA comparison,
 0.6.1/torch 2.11 for EVO1 and the X-VLA export. They are mutually exclusive pins.
