@@ -65,33 +65,53 @@ def main() -> None:
     bundle_dir = args.bundle_dir.resolve()
     _verify_manifest(bundle_dir)
     bundle = json.loads((bundle_dir / "bundle.json").read_text())
-    if bundle.get("deployable") or not bundle.get("random_action_head"):
-        raise ValueError("this fixture emitter is only for the bootstrap bundle")
+    # Trained bundles get a fixture too -- that is the whole point of one, since EVO1
+    # has no PyTorch backend on the Orin to compare against. What must not happen is a
+    # fixture built from a DIFFERENT policy than the graphs: a random head measured
+    # against random-head graphs passes, and so does a trained head against trained
+    # graphs, but crossing them silently certifies nothing. So the checkpoint is read
+    # from the bundle rather than passed in.
+    ckpt = (bundle.get("checkpoint") or {}).get("path")
+    if bool(ckpt) == bool(bundle.get("random_action_head")):
+        raise ValueError(
+            "bundle disagrees with itself: random_action_head="
+            f"{bundle.get('random_action_head')} but checkpoint={ckpt!r}")
+    views = int(bundle["max_views"])
 
     start = time.time()
     policy = _build_policy(
         args.base.resolve(),
         int(bundle["seed"]),
         int(bundle["seq_len"]),
+        views,
+        Path(ckpt) if ckpt else None,
     )
     policy.to(args.device).eval()
     owner = policy.model.embedder.model
     tokenizer = policy.model.embedder.tokenizer
 
+    # One draw per view, from a single stream, so a 2-view fixture's first camera is
+    # NOT the same image a 1-view fixture would have used. Reusing one image across
+    # views would hide a bug that swaps or drops a view.
     image_rng = np.random.default_rng(20260902)
-    raw_image = image_rng.integers(0, 256, size=(480, 640, 3), dtype=np.uint8)
-    image = (
-        torch.from_numpy(raw_image)
+    raw_images = [
+        image_rng.integers(0, 256, size=(480, 640, 3), dtype=np.uint8)
+        for _ in range(views)
+    ]
+    images = [
+        torch.from_numpy(raw)
         .permute(2, 0, 1)
         .unsqueeze(0)
         .to(args.device, dtype=torch.float32)
         / 255.0
-    )
+        for raw in raw_images
+    ]
+    image = images[0]
     mean = torch.tensor(IMAGENET_MEAN, device=args.device, dtype=torch.float32)
     std = torch.tensor(IMAGENET_STD, device=args.device, dtype=torch.float32)
     pixel_values = _batched_pixel_values(
-        [image],
-        max_views=1,
+        images,
+        max_views=views,
         image_size=int(bundle["image_size"]),
         mean=mean,
         std=std,
@@ -99,8 +119,10 @@ def main() -> None:
         device=args.device,
     )
 
+    # One tile per view: the prompt must declare exactly the views the pixel stack
+    # carries, or the image-token count below will not match.
     prompt = policy.model.embedder._build_multimodal_prompts(
-        [[1]],
+        [[1] * views],
         [args.task],
     )
     encoded = tokenizer(
@@ -115,10 +137,11 @@ def main() -> None:
     image_tokens = int(
         (input_ids == int(bundle["image_token_id"])).sum().item()
     )
-    if image_tokens != int(bundle["image_seq_length"]):
+    expected_tokens = views * int(bundle["image_seq_length"])
+    if image_tokens != expected_tokens:
         raise ValueError(
-            f"prompt has {image_tokens} image tokens, expected "
-            f"{bundle['image_seq_length']}"
+            f"prompt has {image_tokens} image tokens, expected {expected_tokens} "
+            f"({views} views x {bundle['image_seq_length']})"
         )
 
     with torch.no_grad():
@@ -192,7 +215,12 @@ def main() -> None:
     fixture_path = bundle_dir / "parity_fixture.npz"
     np.savez_compressed(
         fixture_path,
-        raw_image=raw_image,
+        # raw_image stays the FIRST view's array so a one-view fixture is byte-identical
+        # to what this emitter produced before multi-view; raw_images carries the full
+        # stack. A consumer that only knows raw_image therefore still works on a
+        # one-view bundle and cannot silently half-read a two-view one.
+        raw_image=raw_images[0],
+        raw_images=np.stack(raw_images),
         pixel_values=pixel_values.cpu().numpy().astype(np.float32),
         input_ids=input_ids.cpu().numpy().astype(np.int64),
         context_mask=context_mask.cpu().numpy().astype(bool),
