@@ -34,6 +34,7 @@ engines plus a CPU embedding graph on Orin Nano Super: final-action cosine 0.999
 ~0.56 s per 32-step chunk, and 4.75 GB peak RSS.
 
 ### [`scene-reconstruction/`](scene-reconstruction/) — video → Gaussian splat → Isaac Sim
+(basically deprecated since Spirula Studio exists. I only use the usd_export from here!)
 Smartphone video -> COLMAP -> 3DGRUT raw Gaussian splat -> SuperSplat cleanup/compression -> Isaac Sim NuRec USDZ on DGX Spark. See `scene-reconstruction/README.md`.
 
 ### [`orin-nano/`](orin-nano/) — Jetson Orin Nano deploy side (RealSense + VLA TensorRT)
