@@ -12,9 +12,8 @@ import sys
 from pathlib import Path
 from vla_common.paths import dataset, playbook
 
-ROOT = Path(__file__).resolve().parents[1]
-SPARK = ROOT.parent
-SMOL = SPARK / "vla-onnx/smolvla"
+ROOT = playbook("xvla")
+SMOL = playbook("smolvla")
 EXPECTED_REVISION = "cdb7964e4fe842935d671bfab5a5ebe00a96648c"
 EXPECTED_WEIGHT_BYTES = 3_519_073_692
 
