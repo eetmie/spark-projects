@@ -608,7 +608,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--seq-len", type=int, default=320)
-    parser.add_argument("--max-views", type=int, default=1)
+    parser.add_argument("--views", "--max-views", type=int, default=1, dest="max_views",
+                        help="how many camera views the bundle is sized for. (--max-views is "
+                             "the old name and still works.) Fixes the vision graph's static "
+                             "view count; the runtime zero-pads any it does not have.")
     parser.add_argument("--opset", type=int, default=17)
     parser.add_argument(
         "--families",

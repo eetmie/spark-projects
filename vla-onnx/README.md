@@ -35,6 +35,27 @@ The FP16 recipe in `vla_common/fp16_weights.py` is a hard-won constant, not a de
 a blanket cast overflowed SmolVLA's vision tower here (cosine 0.805), so
 `LayerNormalization` and `Softmax` stay FP32.
 
+## Views
+
+All three exporters take `--views N` — how many camera views the bundle is sized for.
+Nothing in the pipeline assumes a camera count, a camera name, or infrared: camera keys
+are discovered from the checkpoint's `observation.images.*`, and `vla_common` contains no
+camera assumptions at all. The `*_ir` dataset names under `*/excavator/` are one robot's
+presets, not a requirement — that directory is the MASI excavator's experiment scripts and
+is the only place any camera is named.
+
+`--views` is baked into the graphs, not read at runtime, so **a bundle exported at 1 view
+cannot serve a 2-view runtime.** For SmolVLA it sets a static prefix length (1 view = 113
+tokens, 2 = 177); for X-VLA the static batch of the vision engine; for EVO1 the vision
+graph's static view count. The old per-model spellings — `--cam-slots`, `--valid-views`,
+`--max-views` — still work as aliases.
+
+Reshape a dataset to a camera subset without copying video:
+
+```bash
+python -m vla_common.dataset.camera_variant --src <recording> --dst <view> --keep cam1
+```
+
 ## Two environments, and why they cannot be one
 
 | env | lerobot | torch | used by |

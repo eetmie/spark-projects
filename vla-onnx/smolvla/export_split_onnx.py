@@ -323,12 +323,13 @@ def main() -> None:
                          "every task of a multi-task one. Repeatable: pass it once per "
                          "instruction to override the resolved list, first one first "
                          "(that is the order the runtime's D-pad cycles in).")
-    ap.add_argument("--cam-slots", type=int, default=1,
-                    help="camera SLOTS to size the prefix for. The vision graph stays "
-                         "batch-1 (the runtime calls it once per real camera), but "
-                         "prefill/decode bake in a static prefix length, so a bundle "
-                         "exported at 1 slot cannot serve a 2-slot runtime. The public "
-                         "ainekko/smolvla_base_onnx export is 2 (prefix 177).")
+    ap.add_argument("--views", "--cam-slots", type=int, default=1, dest="cam_slots",
+                    help="how many camera views the bundle is sized for. (--cam-slots is "
+                         "the old name and still works.) The vision graph stays batch-1 "
+                         "(the runtime calls it once per real camera), but prefill/decode "
+                         "bake in a STATIC prefix length -- 1 view = 113 tokens, 2 = 177 -- "
+                         "so a bundle exported at 1 cannot serve a 2-view runtime. The "
+                         "public ainekko/smolvla_base_onnx export is 2.")
     ap.add_argument("--state-blind", action="store_true",
                     help="camera-only checkpoint: the state input is dead but still wired "
                          "in, and MUST be fed zeros. run_inference reads this flag.")

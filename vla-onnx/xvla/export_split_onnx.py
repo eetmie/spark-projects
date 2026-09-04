@@ -622,10 +622,12 @@ def main() -> None:
     ap.add_argument("--out-dir", type=Path, default=REPO / "exports" / "split")
     ap.add_argument("--domain-id", type=int, default=0,
                     help="baked into the action encoder/decoder and soft prompts")
-    ap.add_argument("--valid-views", type=int, default=None,
-                    help="static batch of the vision engine; defaults to num_image_views. "
-                         "Set to the number of REAL cameras -- padded views are zeroed by "
-                         "the runtime and never need a forward pass.")
+    ap.add_argument("--views", "--valid-views", type=int, default=None, dest="valid_views",
+                    help="how many camera views the bundle is sized for. (--valid-views is "
+                         "the old name and still works.) Sets the static batch of the vision "
+                         "engine; defaults to the checkpoint's num_image_views. Set it to the "
+                         "number of REAL cameras -- padded views are zeroed by the runtime and "
+                         "never need a forward pass.")
     ap.add_argument("--lang-len", type=int, default=None,
                     help="language tokens; defaults to the saved policy preprocessor")
     ap.add_argument("--fps", type=int, default=None,
