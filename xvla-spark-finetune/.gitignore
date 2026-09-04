@@ -1,5 +1,5 @@
 # The checkpoint is fetched and derived, never committed — see excavator/fetch_checkpoint.sh
-# and excavator/prepare_checkpoint.py. Same rule as ../orin-nano/xvla-runtime/models/.
+# and excavator/prepare_checkpoint.py. Same rule as the other playbooks: checkpoints are not in git.
 models/
 
 # The ONNX-export venv: lerobot 0.6.1, which uses transformers Florence2 (the

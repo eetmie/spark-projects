@@ -1,6 +1,6 @@
 """Split-graph SmolVLA export for the Orin Nano 8 GB (per-component TRT engines).
 
-WHY (see orin-nano/smolvla-runtime/notes/findings.md): the monolithic
+WHY (see notes/orin-split-findings.md): the monolithic
 `sample_actions` export (export_valid_onnx.py) CANNOT TRT-build on the 8 GB Orin
 Nano — TRT imports all 450M weights as FP32 working copies at once (~6 GB floor,
 node-count-independent), so the build OOMs regardless of FP16 / --num-steps.

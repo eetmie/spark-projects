@@ -1,4 +1,9 @@
-# X-VLA runtime — Jetson Orin Nano 8 GB (ONNX Runtime + TensorRT EP)
+# Does X-VLA-0.9B fit on an 8 GB Orin Nano? — the measurement record
+
+> Was `orin-nano/xvla-runtime/README.md` before that folder was dissolved. The export
+> tooling it describes now lives at this playbook's root; the on-device benchmark and the
+> board probes live in [jetson-orin-nano-vla](https://github.com/eetmie/jetson-orin-nano-vla);
+> the robot runtime is `kaivuriprokkis/lerobot_vla/`. Kept for the numbers, which stand.
 
 Can [X-VLA-0.9B](https://huggingface.co/lerobot/xvla-base) run on the same 8 GB board that
 runs SmolVLA? It is roughly **2x the parameters** (879.7 M vs 450 M), and the SmolVLA
@@ -8,7 +13,7 @@ The wider point is comparison: **what does a given VLA actually cost on cheap ed
 hardware, in memory and in re-planning rate**, so models can be judged side by side on the
 same board rather than on a datasheet. Hence the numbers here are measured rather than
 estimated, negative results are kept rather than dropped, and the tooling
-(`tools/build_probe.py`, `tools/memory_probe.py`, `parity.py`, `run_pipeline.py`) is
+(`build_probe.py`, `memory_probe.py`, `parity.py`) is
 written to be pointed at the *next* model too. The comparison so far:
 
 Both measured on this board, 1 real camera, 10 denoising steps, FP16 TRT engines:
@@ -45,7 +50,7 @@ so a deployable X-VLA needs a Spark fine-tune first, exactly as SmolVLA did.
 
 Not runtime — **the TensorRT build**. TRT imports weights as FP32 working copies
 regardless of the ONNX dtype, so the build peak tracks the weight slice a single engine
-carries. Measured on this board with `tools/build_probe.py`:
+carries. Measured on the board with `build_probe.py`:
 
     build peak RSS  ~=  3.18 GB  +  5.63 x (FP32 weight GB)
 
@@ -79,26 +84,30 @@ What *is* hoisted out of the loop: the conditioning projections, their positiona
 embedding slice, and the soft prompts, none of which depend on `x_t` or `t`. That is
 exact, not an approximation.
 
-## Layout
+## Where this code lives now
 
 ```
-xvla-runtime/
-  run_pipeline.py            runner + stress test: latency, staged timings, memory
-  parity.py                  split engines vs the PyTorch reference — the correctness guard
-  xvla_runtime/
-    split_ort.py             providers, preprocessing, engine prebuild, the denoising loop
-  tools/
-    inspect_checkpoint.py    per-component parameter accounting from the safetensors header
-    build_probe.py           measures the TRT build-memory curve on this board
-    export_split_onnx.py     the split exporter (budget-driven)
-  models/xvla-base/          the checkpoint (3.5 GB, not in git)
-  exports/split/             exported graphs + bundle.json
-  notes/split_design.md      architecture, measurements, engine layout
+xvla-spark-finetune/            (this playbook — export + validate on the Spark)
+  export_split_onnx.py          the split exporter (budget-driven)
+  parity.py                     split graphs vs the PyTorch reference — the correctness guard
+  split_ort.py                  the reference runtime parity scores against
+  bundle_contract.py            stats/processor contract + bundle verification
+  fp16_weights.py               FP32 -> mixed-FP16 bundle conversion
+  tools/inspect_checkpoint.py   per-component parameter accounting from the safetensors header
+  notes/split_design.md         architecture, measurements, engine layout
+
+jetson-orin-nano-vla/           (base-model fit + benchmark, on the board)
+  bench/tools/build_probe.py    the TRT build-memory curve measured below
+  bench/tools/memory_probe.py   resident-memory decomposition
+  bench/vendor/xvla_split_ort.py + bench/backends/ort_split_xvla.py
+
+kaivuriprokkis/lerobot_vla/     (the robot)
+  vendor/xvla_split_ort.py, xvla_split.py
 ```
 
 ## Setup (JetPack 7.2, Python 3.12, aarch64)
 
-Same host prep as smolvla-runtime ([`../system/`](../system/)). The venv needs
+Same host prep as the benchmark repo (`jetson-orin-nano-vla/scripts/`). The venv needs
 `--system-site-packages` for the JetPack `tensorrt`:
 
 ```bash
@@ -120,24 +129,22 @@ class of trap as the pandas shadowing in `kaivuriprokkis/.venv-lerobot`.
 
 ```bash
 # 0. Where does the memory actually go? (no checkpoint needed)
-python tools/build_probe.py --blocks 4 8 12
+python bench/tools/build_probe.py --blocks 4 8 12    # in jetson-orin-nano-vla, on the board
 
 # 1. Parameter accounting straight from the checkpoint header
 python tools/inspect_checkpoint.py models/xvla-base/model.safetensors --detail
 
 # 2. Export the split graphs (one subprocess per graph family)
-python tools/export_split_onnx.py --checkpoint models/xvla-base --domain-id 0 --valid-views 1
+python export_split_onnx.py --checkpoint models/xvla-base --domain-id 0 --valid-views 1
 
 # 3. Build every engine, one subprocess each — do this before the first run
-python -c "from xvla_runtime.split_ort import prebuild_engines; \
+python -c "from split_ort import prebuild_engines; \
            prebuild_engines('exports/split', 'exports/split/trt_cache', 'fp16')"
 
 # 4. Parity vs the PyTorch reference BEFORE trusting any action
 python parity.py --split-dir exports/split --checkpoint models/xvla-base
 
-# 5. Latency + memory, then the long stress run
-python run_pipeline.py --duration-s 30 --show-actions
-python run_pipeline.py --duration-s 1800 --report-every 60
+# 5. Latency + memory on the board — now `python -m bench` in jetson-orin-nano-vla
 ```
 
 The engine cache defaults to `exports/split/trt_cache`, not `/tmp`: twelve engines are a
@@ -169,7 +176,7 @@ X-VLA-0.9B works on this board as 12 split engines.
   real deployment shape puts the camera reader and the 100 Hz controller in the *same*
   process (see `kaivuriprokkis/lerobot_vla/run_inference.py`).
 
-**Memory was chased down and is now understood** (`tools/memory_probe.py`, and the tables in
+**Memory was chased down and is now understood** (`memory_probe.py`, and the tables in
 `notes/split_design.md`). It decomposes as ~2.5 GB fixed CUDA/TRT context plus ~3.5 GB of
 engine/runtime allocation, and it is stubborn: FP16 weights in the ONNX buy 0.34 GB, ORT
 arena off 0.16 GB, dropping the CUDA EP 0.14 GB, and they do not stack. The guess that ORT

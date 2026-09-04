@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 
-from .bundle_contract import (normalize_vector, tree_sha256, unnormalize_vector,
+from bundle_contract import (normalize_vector, tree_sha256, unnormalize_vector,
                               verify_bundle)
 
 LOG = logging.getLogger(__name__)
@@ -343,11 +343,11 @@ import sys
 import numpy as np
 import onnxruntime as ort
 sys.path.insert(0, %r)
-from xvla_runtime.split_ort import build_providers
+from split_ort import build_providers
 
 onnx_path, cache_dir, precision = sys.argv[1], sys.argv[2], sys.argv[3]
 ctx_dir = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
-from xvla_runtime.split_ort import make_session_options
+from split_ort import make_session_options
 so = make_session_options()
 sess = ort.InferenceSession(onnx_path, sess_options=so,
                             providers=build_providers(cache_dir, precision, ctx_dir))

@@ -33,18 +33,28 @@ and mixed-FP16 conversion. The non-deployable random-head bootstrap builds as te
 engines plus a CPU embedding graph on Orin Nano Super: final-action cosine 0.999991,
 ~0.56 s per 32-step chunk, and 4.75 GB peak RSS.
 
+### [`xvla-spark-finetune/`](xvla-spark-finetune/) — X-VLA-0.9B fine-tune + split export
+Full fine-tune of X-VLA on the excavator data, plus the budget-driven split exporter,
+parity guard and bundle contract. Full-finetune beats a frozen-encoder run by ~14 %.
+The 8 GB fit measurements that motivated the split are in `notes/fit-on-8gb.md`.
+
 ### [`scene-reconstruction/`](scene-reconstruction/) — video → Gaussian splat → Isaac Sim
 (basically deprecated since Spirula Studio exists. I only use the usd_export from here!)
 Smartphone video -> COLMAP -> 3DGRUT raw Gaussian splat -> SuperSplat cleanup/compression -> Isaac Sim NuRec USDZ on DGX Spark. See `scene-reconstruction/README.md`.
 
-### [`orin-nano/`](orin-nano/) — Jetson Orin Nano deploy side (RealSense + VLA TensorRT)
-The deploy counterpart to the Spark playbooks, on a Jetson **Orin Nano Super** (**JetPack 7.2**,
-stock kernel). `system/` sets MAXN_SUPER + swap, `realsense-rgb/` builds librealsense for the D435i
-RGB stream (RSUSB, no kernel patches), and `smolvla-runtime/` runs the SmolVLA ONNX exported by
-`smolvla-spark-finetune/` through **ONNX Runtime + the TensorRT execution provider** (FP16, engine-
-cached; camera → model → action chunk; no robot control yet). `evo1-runtime/` adds the
-non-deployable EVO1 parity/memory harness. Engine caches are always built on-device —
-never copied from the Spark.
+## Where the deploy side lives
+
+This repo is the **Spark side**: fine-tune, export, and validate the export. It stops at a
+parity-checked ONNX bundle.
+
+| repo | owns |
+|---|---|
+| **spark-projects** (here) | fine-tuning, ONNX export, export parity, bundles |
+| [**jetson-orin-nano-vla**](https://github.com/eetmie/jetson-orin-nano-vla) | does a **base** model fit on the 8 GB Orin, and what it costs — board prep, TRT build probes, the benchmark |
+| **kaivuriprokkis** | the robot — fine-tuned runtime, camera, control |
+
+TensorRT engines are built on-device and never copied; the ONNX bundle is the portable
+artifact. Bundles ship with `ship_bundle.sh <dir> orin <name>` and land in `~/bundles/`.
 
 ## Notes
 - `pi05-spark-inference/phase2/openpi_on_thor/` contains scripts adapted from NVIDIA /

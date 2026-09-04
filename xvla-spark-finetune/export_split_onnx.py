@@ -30,10 +30,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO))
 
-from xvla_runtime.bundle_contract import (SCHEMA_VERSION, build_processor_contract,
+from bundle_contract import (SCHEMA_VERSION, build_processor_contract,
                                           copy_processor_artifacts,
                                           materialize_tokenizer, tree_sha256)
 

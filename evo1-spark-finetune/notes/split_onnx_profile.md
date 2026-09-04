@@ -16,7 +16,7 @@ it validates the deployment shape but is explicitly not a robot policy.
   `zuoxingdong/evo1_libero` revision
   `515921f4a2c1d3f3ad523721eafa26fdf2af315b` by reading its safetensors header.
 - The splits started from the **100 M tensor-element / 0.40 GB FP32 build budget**
-  measured by `orin-nano/xvla-runtime/tools/build_probe.py`, then every proposed graph
+  measured by `build_probe.py` in jetson-orin-nano-vla (`bench/tools/`), then every proposed graph
   was actually built on the target Orin. The worst measured build still left 2.995 GB
   system memory available.
 

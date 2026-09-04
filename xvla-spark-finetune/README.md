@@ -1,8 +1,9 @@
 # xvla-spark-finetune — X-VLA-0.9B fine-tune on the DGX Spark (GB10)
 
-The missing half of the X-VLA experiment. [`../orin-nano/xvla-runtime/`](../orin-nano/xvla-runtime/)
-answered *can this model run on an 8 GB Orin* (yes — 12 split TRT engines, 390 ms/chunk,
-5.71 GB peak RSS, parity cosine 1.000000) and ended on the sentence that defines this
+The missing half of the X-VLA experiment. The fit question — *can this model run on an 8 GB
+Orin* — was answered first in
+[`notes/fit-on-8gb.md`](notes/fit-on-8gb.md): yes — 12 split TRT engines, 390 ms/chunk,
+5.71 GB peak RSS, parity cosine 1.000000. That work ended on the sentence that defines this
 project:
 
 > `xvla-base` cannot drive the excavator as-is (it is a 20-dim `ee6d` arm policy), so a
@@ -130,7 +131,7 @@ All four are argued in the header of `excavator/run_digging.sh`. Short version:
 - **VLM encoders frozen** — matches the config's own documented intent (its literal
   defaults disagree with its docstring) and the SmolVLA recipe.
 
-`domain_id` stays 0, matching `../orin-nano/xvla-runtime`'s `--domain-id 0`.
+`domain_id` stays 0, matching the exporter's `--domain-id 0`.
 
 ## Deployment note
 

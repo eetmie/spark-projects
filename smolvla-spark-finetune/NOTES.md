@@ -9,7 +9,7 @@ The important boundary is:
 - GB10 machine: PyTorch, LeRobot training, ONNX export, ONNX structural validation.
 - Jetson Orin Nano: ONNX Runtime + TensorRT EP inference (FP16); the TRT engine is auto-built + cached from the ONNX on first run.
 
-The Orin Nano builds + caches its TensorRT engine from a valid ONNX via ONNX Runtime's TensorRT EP — the first build is slow and memory-sensitive (needs the swap + MAXN_SUPER from `orin-nano/system/`). It is not the right place to export PyTorch/LeRobot checkpoints to ONNX.
+The Orin Nano builds + caches its TensorRT engine from a valid ONNX via ONNX Runtime's TensorRT EP — the first build is slow and memory-sensitive (needs the swap + MAXN_SUPER from `jetson-orin-nano-vla/scripts/`). It is not the right place to export PyTorch/LeRobot checkpoints to ONNX.
 
 ## NEXT BIG TASK: split-graph export (2026-06-17)
 
@@ -18,7 +18,7 @@ loop) **cannot TRT-build on the Orin Nano's 8 GB** — TRT imports all 450M weig
 copies at once (~6 GB floor, node-count-independent). FP16 weights and `--num-steps 5` do NOT fix it
 (both still OOM). Settled fix = **export per-component split graphs**; each carries only its weight
 slice → builds in ≤60 s, runs in ms (validated on-device with `ainekko/smolvla_base_onnx`).
-Full matrix + validation: `orin-nano/smolvla-runtime/notes/findings.md`.
+Full matrix + validation: `notes/orin-split-findings.md`.
 
 **What to build here on GB10** — mirror `ainekko/smolvla_base_onnx` (9 graphs) and the inference loop
 in `github.com/aifoundry-org/ETARS` (`notebooks/smolVLA_export.ipynb`, `src/lerobot/policies/smolvla/
@@ -32,7 +32,7 @@ smolvlm_with_expert_onnx.py`, `modeling_smolvla_ort.py`):
 Keep the current `export_valid_onnx.py` monolith only as the **FP32 parity gold** (run parity on a big
 box, not the Orin). Export FP32; the Orin's TRT-EP lowers to FP16 per engine (each builds fine, weights
 are split). Ship the 9 graphs + `tokenizer/` + normalization stats as the deploy bundle. On the Orin,
-the prefill→decode loop gets wired into `orin-nano/smolvla-runtime/backends/ort.py`.
+the prefill→decode loop gets wired into `kaivuriprokkis `lerobot_vla/smolvla_split.py``.
 
 Projected end-to-end on Orin: (vision 33 ms + text + prefill 16.5 ms) once + decode 11.4 ms ×N →
 ~5–6 Hz at 10 steps, ~9 Hz at 5 steps, full num_steps quality.
@@ -240,14 +240,14 @@ Recommended path:
 1. Export ONNX on GB10 with `export_valid_onnx.py` — this now also writes a **deploy bundle** next to
    the ONNX: `tokenizer/` (vocab-exact, from the checkpoint's processor) + the normalization stats
    (`policy_preprocessor*` / `policy_postprocessor*`).
-2. Copy the whole bundle to the Orin's `orin-nano/smolvla-runtime/exports/`: the `*.onnx`
+2. Copy the whole bundle to the Orin's `~/bundles/<name>/`: the `*.onnx`
    (+ `*.onnx.data` sidecar if present), the `tokenizer/` dir, and the normalization stats.
 3. On the Orin (one-time): `pip install onnxruntime-gpu` from the **`sbsa/cu130`** Jetson AI Lab
    index (there is no `jp7` index; CUDA-13 aarch64 wheels live under `sbsa`). Verified:
    `onnxruntime-gpu 1.24.0` with TensorRT + CUDA + CPU EPs.
 4. Run: `python run_pipeline.py --backend ort --onnx-path exports/<name>.onnx
    --model-id exports/tokenizer --source realsense`. First run builds + caches the engine (minutes,
-   needs the 16 GB swap + MAXN_SUPER from `orin-nano/system/`); later runs load from cache.
+   needs the 16 GB swap + MAXN_SUPER from `jetson-orin-nano-vla/scripts/`); later runs load from cache.
 5. Gate before trusting actions: `python parity.py --onnx exports/<name>.onnx
    --model-id exports/tokenizer` (FP16 vs FP32-CPU, expect cosine ≥ 0.997, all finite). If it FAILS
    (non-finite / cosine drop from the vision tower's `inf` mask constants), re-export here with

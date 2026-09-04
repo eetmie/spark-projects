@@ -133,7 +133,7 @@ training because they affect prompt positions and the final ONNX sequence shape.
 ```
 
 The result is a checksummed 1.827 GB bundle: ten TensorRT graphs plus one CPU token
-embedding graph. Copy it with [`../orin-nano/evo1-runtime/`](../orin-nano/evo1-runtime/)
+embedding graph. Run it with [jetson-orin-nano-vla](https://github.com/eetmie/jetson-orin-nano-vla) (`bench ort-split --model evo1-bootstrap`)
 to the Jetson, build each engine in an isolated subprocess, and run the included fixture.
 
 ## Current status
@@ -147,7 +147,7 @@ to the Jetson, build each engine in an isolated subprocess, and run the included
   0.999991 final action.
 - Device-resident action I/O binding reduces a cached 32-step chunk from 390.61 ms to
   294.85 ms (24.5%) at 4.77 GB peak RSS with identical output. See the
-  [Orin performance sweep](../orin-nano/evo1-runtime/notes/performance.md).
+  [Orin performance sweep](notes/orin/performance.md).
 - The pinned RoboTwin checkpoint converts to all 728 LeRobot 0.6.1 tensors with exact
   key/shape coverage and passes a strict serialized load.
 - Remaining deployment blocker: train/obtain a real LeRobot EVO1 policy checkpoint. The

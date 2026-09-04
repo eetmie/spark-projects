@@ -32,7 +32,7 @@ import numpy as np
 REPO = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO))
 
-from xvla_runtime.bundle_contract import (normalize_vector, tree_sha256,
+from bundle_contract import (normalize_vector, tree_sha256,
                                           unnormalize_vector, verify_bundle)
 
 LOG = logging.getLogger("parity")
@@ -94,7 +94,7 @@ def emit_reference(args) -> None:
 
     from lerobot.policies.xvla.modeling_xvla import XVLAPolicy
 
-    from xvla_runtime.split_ort import preprocess_image
+    from split_ort import preprocess_image
 
     bundle = verify_bundle(args.split_dir, verify_manifest=True)
     expected_checkpoint_sha = (bundle.get("checkpoint") or {}).get("tree_sha256")
@@ -213,7 +213,7 @@ def emit_reference(args) -> None:
 
 
 def compare(args) -> int:
-    from xvla_runtime.split_ort import XVLASplitPolicy
+    from split_ort import XVLASplitPolicy
 
     ref = np.load(args.reference, allow_pickle=False)
 

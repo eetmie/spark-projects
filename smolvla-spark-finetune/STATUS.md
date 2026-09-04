@@ -20,7 +20,7 @@ Experimental but locally verified on NVIDIA GB10.
 - **The monolithic ONNX does NOT TRT-build on the Orin Nano's 8 GB** — not FP32, not FP16, not
   `--num-steps 5`, not headless. TRT imports all 450M weights as FP32 working copies at once (~6 GB
   floor, independent of node count), so the build OOMs/thrashes. `--fp16-weights` and fewer steps do
-  not fix it. (Full matrix: `orin-nano/smolvla-runtime/notes/findings.md`.)
+  not fix it. (Full matrix: `notes/orin-split-findings.md`.)
 - **The deploy path is SPLIT per-component engines** (vision / text / expert-prefill / expert-decode
   + projectors), denoise loop run in Python. Validated on-device with the reference base-weight split
   (`ainekko/smolvla_base_onnx`): each heavy engine builds in ≤60 s and runs in ms → ~5–9 Hz end-to-end.
@@ -32,7 +32,7 @@ Experimental but locally verified on NVIDIA GB10.
 - **Split export of OUR fine-tuned weights**: `export_split_onnx.py --model-id <checkpoint>`
   → `exports-split-excavA6000/`. Split-vs-monolith parity on identical seeded inputs:
   cosine 1.0000000, max_abs 4.05e-6 → **PASS, Orin-ready**.
-- Deploy bundle shipped to the Orin (`orin-nano/.../exports/excav_A6000_split/`): 9 graphs +
+- Deploy bundle shipped to the Orin (`~/bundles/excav_A6000_split/`): 9 graphs +
   tokenizer + stats.json (verified identical to the checkpoint's normalizer) +
   `export_info.json` with `fps` (read by kaivuriprokkis' run_inference fps guard) + PARITY.txt.
 - Synthetic split-TRT inference on the Orin with base weights: engines build ≤60 s each,
@@ -104,5 +104,5 @@ Experimental but locally verified on NVIDIA GB10.
 3. Run PyTorch-vs-ONNX parity on GB10.
 4. Copy the split bundle (9 graphs + `tokenizer/` + normalization stats) to the Orin Nano.
 5. The Orin builds + caches one TRT engine per heavy graph (FP16, ≤60 s each), and runs the
-   prefill→decode loop in Python (`orin-nano/smolvla-runtime/backends/ort.py`).
+   prefill→decode loop in Python (`kaivuriprokkis `lerobot_vla/smolvla_split.py``).
 6. Run on-Orin parity, then robot integration.

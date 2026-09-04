@@ -98,7 +98,7 @@ def clamp_inf_constants_for_fp16(onnx_path: str, finite: float = 1.0e4) -> int:
 
 # Numerically-sensitive ops kept in FP32 during the FP16 weight conversion. The 25
 # LayerNormalization (vision tower) + 187 Softmax (attention) are the ops a blanket
-# FP16 cast overflowed before (vision tower, cos 0.805 — see orin-nano findings);
+# FP16 cast overflowed before (vision tower, cos 0.805 — see notes/orin-split-findings.md);
 # keeping them FP32 mirrors the on-Orin trt_layer_norm_fp32_fallback.
 _FP16_SENSITIVE_OPS = ["LayerNormalization", "Softmax"]
 
@@ -217,7 +217,7 @@ def patch_smolvla_for_legacy_onnx_export() -> None:
         # inserts a device->host copy + sync per inference (latency stall) and the
         # DDS path is the fragile one on Jetson/older TRT. torch.where is equivalent
         # here (position_ids starts all-zeros, mask is all-true for a full image)
-        # and exports to a static `Where`. See orin-nano notes/findings.md.
+        # and exports to a static `Where`. See notes/orin-split-findings.md.
         position_ids = torch.where(flat_mask, pos_ids, position_ids)
         embeddings = embeddings + self.position_embedding(position_ids)
         return embeddings

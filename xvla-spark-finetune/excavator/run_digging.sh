@@ -149,7 +149,7 @@ fi
 # Local checkpoint dir rather than the `lerobot/xvla-base` repo id: huggingface_hub's
 # downloader stalled twice mid-file on this box (dead at 245-257 MB of 3519 with the
 # process still alive), so the 3.5 GB safetensors is fetched once with curl -C - and
-# reused. Mirrors ../orin-nano/xvla-runtime/models/xvla-base/. Fetch with:
+# reused. Fetch with:
 #   bash excavator/fetch_checkpoint.sh
 CKPT=${CKPT:-$ROOT/models/xvla-base-excavator}
 
