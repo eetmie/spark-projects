@@ -37,9 +37,34 @@ EVO1 LIBERO recipe. The `-hf` suffix matters: EVO1 expects the native Transforme
 InternVL implementation.
 
 The older `MINT-SJTU/Evo1_*` artifacts are author-format DeepSpeed checkpoints, not
-LeRobot `PreTrainedPolicy` directories. The current known LeRobot-format reference
-checkpoint is `zuoxingdong/evo1_libero`, but it is LIBERO-specific and is used here
-only as an architecture/profile reference.
+LeRobot `PreTrainedPolicy` directories — `mp_rank_00_model_states.pt` and
+`norm_stats.json`, with no `model.safetensors` and no processor configs, so
+`Evo1Policy.from_pretrained` has nothing to load. That applies to `Evo1_LIBERO`,
+`Evo1_MetaWorld`, `Evo1_SO100`, and to every published **EVO-Depth** artifact
+(`EVO-Depth-LIBERO`, `-MetaWorld`, `-Arena`); `liujiting/Evo-depth` is a README with no
+weights at all. Consuming any of them needs a DeepSpeed → LeRobot conversion that does
+not exist here yet.
+
+The LeRobot-format checkpoint is **`zuoxingdong/evo1_libero`**, and it is now exportable
+rather than only a profile reference:
+
+```bash
+python export_split_onnx.py --checkpoint models/evo1-libero --views 2 --seq-len 576 \
+    --out-dir exports/split-libero
+```
+
+`--checkpoint` traces trained weights instead of a fresh random head, and flips the
+bundle's `deployable`/`random_action_head`/`warning` fields accordingly. It also records
+the weight file's own sha256, so a bundle can always say which weights produced it.
+
+Two shape notes, both enforced rather than assumed. `--views 2` is safe on a checkpoint
+whose config says `max_views: 3` because neither `max_views` nor `max_text_length` sizes
+a weight — the first only pads the view stack and widens the image mask, the second is a
+tokenizer truncation length — so exporting LIBERO's two real cameras at 2 views drops 256
+masked positions per sequence and changes nothing about the real views. And `--seq-len`
+must clear `views × 256 + 8`: an absent view still spends its image-token budget, so 2
+views need 520 minimum. The exporter raises with the required number rather than letting
+the embedder silently truncate the prompt.
 
 For a pretrained transfer initializer, the current recommendation is
 `MINT-SJTU/Evo1_RoboTwin2_clean`; its broader 50-task training is a better fit than the
