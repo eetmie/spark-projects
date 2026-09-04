@@ -43,7 +43,7 @@ parity-checked ONNX bundle.
 |---|---|
 | **spark-projects** (here) | fine-tuning, ONNX export, export parity, bundles |
 | [**jetson-orin-nano-vla**](https://github.com/eetmie/jetson-orin-nano-vla) | does a **base** model fit on the 8 GB Orin, and what it costs — board prep, TRT build probes, the benchmark |
-| **kaivuriprokkis** | the robot — fine-tuned runtime, camera, control |
+| [**kaivuriprokkis**](https://github.com/eetmie/kaivuriprokkis) | the robot. Fine-tuned runtime, camera, control and generally a very messy dev repo |
 
 TensorRT engines are built on-device and never copied; the ONNX bundle is the portable
 artifact. Bundles ship with `ship_bundle.sh <dir> orin <name>` and land in `~/bundles/`.
