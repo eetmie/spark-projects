@@ -15,8 +15,8 @@ Running the bundle is somebody else's job: base-model fit and benchmarks live in
 
 | playbook | model | state |
 |---|---|---|
-| [`smolvla/`](smolvla/) | SmolVLA 450 M | fine-tuned, deployed, driven the machine |
-| [`xvla/`](xvla/) | X-VLA 0.9 B | fine-tuned, exported, benchmarked |
+| [`smolvla/`](smolvla/) | SmolVLA 450 M | fine-tuned, deployed |
+| [`xvla/`](xvla/) | X-VLA 0.9 B | fine-tuned, deployed |
 | [`evo1/`](evo1/) | EVO1 775 M | export + Orin bootstrap proven; **no trained checkpoint yet** |
 
 ## What is shared, and what is deliberately not
