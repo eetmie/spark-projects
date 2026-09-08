@@ -75,9 +75,9 @@ The check is against the command actually assembled, so it stays correct as flag
 ## Scoring a run
 
 ```bash
-smolvla/excavator/eval_compare.py --sweep smolvla/outputs/<sweep> --horizons 0.17 0.3
-smolvla/excavator/eval_compare.py --ckpt <checkpoint> --only-task "move rock to container"
-smolvla/excavator/eval_curve.py   --sweep smolvla/outputs/<sweep> --horizon 0.17
+eval/compare.py --sweep smolvla/outputs/<sweep> --horizons 0.17 0.3
+eval/compare.py --ckpt <checkpoint> --only-task "move rock to container"
+eval/curve.py   --sweep smolvla/outputs/<sweep> --horizon 0.17
 ```
 
 The source recording, the held-out episodes and the per-episode instructions are read from
@@ -85,6 +85,25 @@ the checkpoint's own `train_config.json` — held-out is the complement of
 `dataset.episodes`, so it cannot disagree with what the run actually trained on. There is
 no preset table any more; see [`smolvla/notes/retired-presets.md`](smolvla/notes/retired-presets.md)
 for the one it replaced and what each field of it cost.
+
+`eval/` is model-agnostic — it loads whatever architecture a checkpoint records — so
+scoring a SmolVLA run against an X-VLA one is `--ckpt smolvla=<path> --ckpt xvla=<path>`
+rather than one playbook reaching into another's tree. Runs in one table must resolve to
+the same recording and the same held-out set, or it refuses rather than blend them.
+
+## Exporting a bundle
+
+```bash
+./run_export.sh --model smolvla --run smolvla/outputs/<sweep>/<run>          # best step
+./run_export.sh --model xvla --run xvla/outputs/<sweep>/<run> --step 17500
+```
+
+`--step best` is the default and reads the minimum held-out error from the sweep's
+`curve.json`. If that file is missing it exports **nothing** — the peak is not the last
+step on this project's own history (kaivuri peaked at 20000 of 30000, the first dry run at
+25000 of 50000), and a bundle built from the wrong checkpoint is worse than no bundle.
+Note that X-VLA *exports* in `.venv-lerobot061` while it *trains* in `.venv-lerobot051`;
+`run_export.sh` picks the right one.
 
 ## What is shared, and what is deliberately not
 

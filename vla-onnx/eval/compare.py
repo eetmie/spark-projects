@@ -48,9 +48,9 @@ a checkpoint and the source, the split and the instructions come from the run it
 Drift is not fixed here, it is made unrepresentable.
 
 Usage:
-    python eval_compare.py --ckpt outputs/digging_demo/dry2_ir/checkpoints/001000
-    python eval_compare.py --sweep outputs/digging_demo --horizons 0.17 0.3
-    python eval_compare.py --ckpt A=<path> --ckpt B=<path> --only-task "move rock to container"
+    python compare.py --ckpt outputs/digging_demo/dry2_ir/checkpoints/001000
+    python compare.py --sweep outputs/digging_demo --horizons 0.17 0.3
+    python compare.py --ckpt A=<path> --ckpt B=<path> --only-task "move rock to container"
 """
 
 import argparse

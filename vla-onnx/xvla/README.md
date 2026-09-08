@@ -26,38 +26,48 @@ and neither experiment should be able to break the other.
 | the same held-out recordings | the 18 remapped cleaned ids used by the SmolVLA cleaned-data runs |
 | the same chunk length (30) | directly compares with SmolVLA `clean_ir30` and matches the validated X-VLA Orin contract |
 | the same frozen slice | VLM encoders frozen, action head/policy transformer trains |
-| the same metric | `eval_compare.py` disp_err, integrated command error over a fixed wall-clock horizon |
+| the same metric | `eval/compare.py` disp_err, integrated command error over a fixed wall-clock horizon |
 
 The full 189-episode data, two-camera variants, and the newer dry-sand recording remain
 available as `ir`, `both`, `clean_both`, and `dry_ir` targets. Episode counts are
 read from each dataset at launch. This matters: the original runner hardcoded
 `range(82)` and would silently ignore the 107 episodes appended later.
 
-The eval harness lives on the SmolVLA side but is **architecture-agnostic**: it loads
-whatever `policy.type` a checkpoint records via `get_policy_class`, and feeds each model
-only the cameras its own config lists. Runs in different sweep dirs are joined with
-`--extra-runs`:
+The eval harness lives in [`../eval/`](../eval/) and is **architecture-agnostic**: it
+loads whatever `policy.type` a checkpoint records via `get_policy_class`, and feeds each
+model only the cameras its own config lists. Runs from different playbooks go in one
+table by naming them:
 
 ```bash
-cd ../smolvla/excavator
-../.venv/bin/python eval_compare.py --preset digging_clean --runs \
-    --horizons 0.5 \
-    --extra-runs smolvla_clean_ir30=../outputs/digging_clean30/clean_ir \
-                 xvla_clean_ir=../../xvla/outputs/clean_ir_chunk30/clean_ir
+../.venv-lerobot051/bin/python ../eval/compare.py --horizons 0.5 \
+    --ckpt smolvla=../smolvla/outputs/<sweep>/<run>/checkpoints/last \
+    --ckpt xvla=outputs/<sweep>/<run>/checkpoints/last
 ```
 
-That prints SmolVLA and X-VLA rows in one table with a `policy` column.
+That prints SmolVLA and X-VLA rows in one table with a `policy` column. Both must have
+held out the same episodes from the same recording, or it refuses rather than blend them
+— which it can check, because each checkpoint records its own split. When the table spans
+more than one architecture `--n-draws` defaults to 4: X-VLA gains ~18.5% from averaging
+flow-matching draws and SmolVLA ~0%, so scoring a mixed table at 1 charges X-VLA for
+sampler variance SmolVLA does not have.
 
 ## Run
 
 ```bash
-bash excavator/setup.sh clean_ir          # idempotent install/checkpoint/data/GPU preflight
-bash excavator/smoke.sh clean_ir          # 2 train steps, no multi-GB checkpoint
+bash excavator/setup.sh                   # idempotent install/checkpoint/GPU preflight
 
-# Recommended first real run: cleaned IR, chunk 30, 30k steps, automatic held-out curve.
-setsid nohup bash excavator/queue_digging.sh clean_ir \
-    > outputs/clean_ir-queue.log 2>&1 &
+# 2 train steps into a disposable dir, to prove the stack before an overnight run.
+../run_training.sh --model xvla --dataset <recording> --cameras cam1 --smoke
+
+# A real run: chunk 30 predicted, 10 executed, 30k steps, frozen encoders.
+setsid nohup ../run_training.sh --model xvla --dataset <recording> --cameras cam1 \
+    --policy.chunk_size 30 --policy.n_action_steps 10 --steps 30000 \
+    --train-mode frozen > outputs/xvla-run.log 2>&1 &
 ```
+
+`--train-mode full` unfreezes both encoders (879 M trainable against 311 M). That is the
+recipe that beat the frozen one by ~14%, and it now goes into the run directory name
+instead of surviving only as a directory string someone typed.
 
 The base checkpoint is pinned to Hub revision
 `cdb7964e4fe842935d671bfab5a5ebe00a96648c` and verified with `hf cache verify`.
@@ -77,9 +87,9 @@ bfloat16; that is now the runner default. A 50-step batch-32 / chunk-30 probe me
 for long-run thermal drift:
 
 ```bash
-STEPS=250 SAVE_CHECKPOINT=false OUT=outputs/bf16-probe \
-    bash excavator/run_digging.sh clean_ir
-grep -oE "updt_s:[0-9.]+" outputs/bf16-probe/logs/clean_ir.log | tail
+../run_training.sh --model xvla --dataset <recording> --cameras cam1 \
+    --policy.chunk_size 30 --steps 250 --out outputs/bf16-probe
+grep -oE "updt_s:[0-9.]+" outputs/bf16-probe/logs/*.log | tail
 ```
 
 ## The stock checkpoint cannot train on this dataset unmodified
@@ -112,7 +122,7 @@ same shape as the Orin runtime's `--valid-views 1`.
 
 ## Settings that are not X-VLA's defaults
 
-All four are argued in the header of `excavator/run_digging.sh`. Short version:
+All four are argued in the xvla arm of `../run_training.sh`. Short version:
 
 - **`action_mode=auto`** — the default `ee6d` is a 20-dim arm space the excavator does not
   have. `auto` detects real_dim=4 from the dataset, pads to 20 so the pretrained head
@@ -127,7 +137,7 @@ All four are argued in the header of `excavator/run_digging.sh`. Short version:
   the native low-precision format on GB10. The earlier FP32 probe remains a baseline.
 - **`chunk_size=30` for the queued first run** — the base checkpoint and validated Orin
   runtime both use 30, and SmolVLA already has an otherwise-matched cleaned-IR chunk-30
-  run. `run_digging.sh` itself remains configurable; use 50 only for a chunk-50 comparison.
+  run. `--policy.chunk_size` remains free; use 50 only for a chunk-50 comparison.
 - **VLM encoders frozen** — matches the config's own documented intent (its literal
   defaults disagree with its docstring) and the SmolVLA recipe.
 

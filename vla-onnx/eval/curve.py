@@ -6,18 +6,18 @@ With a few dozen training episodes and tens of epochs, overfitting is expected.
 This turns that into data: it plots held-out displacement error against training
 step for each run, and reports the best checkpoint per run rather than the final one.
 
-Reuses eval_compare's scoring so the numbers are the same ones the headline table
+Reuses compare.py's scoring so the numbers are the same ones the headline table
 reports -- identical source-rate observations for every model, each model fed only
 the cameras it was trained on, each chunk zero-order held onto a common grid,
 scored on integrated command error.
 
-Like eval_compare, the source recording, the held-out split and the instructions are read
+Like compare.py, the source recording, the held-out split and the instructions are read
 out of each checkpoint's own train_config.json rather than a hand-maintained preset -- see
-the note at the top of eval_compare.py for what that table cost.
+the note at the top of compare.py for what that table cost.
 
 Usage:
-    python eval_curve.py --sweep outputs/digging_demo --horizon 0.17
-    python eval_curve.py --sweep <dir> --runs dry2_ir --only-task "move rock to container"
+    python curve.py --sweep outputs/digging_demo --horizon 0.17
+    python curve.py --sweep <dir> --runs dry2_ir --only-task "move rock to container"
 """
 
 import argparse
@@ -30,7 +30,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from eval_compare import (
+from compare import (
     DEFAULT_STRIDE,
     agree,
     eval_points,

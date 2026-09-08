@@ -47,31 +47,40 @@ usage() {
     sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
     cat <<'USAGE'
 
-Flags:
+Passed straight to lerobot-train -- same names it uses, --flag=value also accepted.
+The short forms are aliases.
+
+  --steps N                              (default 30000)
+  --seed N                               (default 1000)
+  --batch_size N          / --batch      (default 32)
+  --num_workers N         / --workers    (default 10)
+  --save_freq N           / --save-freq  (default 2500)
+  --log_freq N            / --log-freq   (default 250)
+  --policy.chunk_size N   / --chunk      (default 50)
+  --policy.n_action_steps N / --execute  (default: = chunk_size)
+  --policy.optimizer_lr X / --lr         (default: per model)
+  --policy.load_vlm_weights BOOL / --no-vlm-weights   smolvla (default true)
+  -- ARGS...              everything after this goes to lerobot-train verbatim; a flag
+                          this script already sets is refused, naming the owning flag
+
+This script's own -- they compute something, so they are NOT lerobot spellings:
+
   --model M            smolvla | xvla | evo1                            (required)
   --dataset NAME       a recording under $VLA_DATASETS, or a path       (required)
-  --cameras a,b        cameras to train on (default: all in the source)
+  --cameras a,b        cameras to train on; builds the dataset view (default: all)
   --train-mode M       expert | frozen | full | lora   (default: per model)
-  --chunk N            --policy.chunk_size            (default 50)
-  --execute N          --policy.n_action_steps        (default: = --chunk)
-  --steps N            (default 30000)      --batch N      (default 32)
-  --lr X               (default: per model) --seed N       (default 1000)
-  --save-freq N        (default 2500)       --workers N    (default 10)
-  --log-freq N         (default 250)
-  --holdout SPEC       every10@5 | "5 15 25" | none       (default every10@5)
+  --holdout SPEC       every10@5 | "5 15 25" | none    (-> --dataset.episodes)
+  --init-from PATH     start from this checkpoint instead of the base weights
   --name S             run dir name (default: <cams>-c<chunk>[x<exec>]-<mode>)
   --sweep S            sweep dir name (default: the dataset name)
-  --out DIR            override <playbook>/outputs/<sweep>
+  --out DIR            the SWEEP dir, <playbook>/outputs/<sweep>. Not lerobot's
+                       --output_dir, which is the run dir inside it.
   --after-pid N        wait for /proc/N to disappear, then start
+  --if-stale MODE      camera view staleness: rebuild | reuse | refuse | force
   --smoke              2 steps, tiny batch, no checkpoint, disposable output dir
   --dry-run            print the resolved lerobot-train command and exit
   --force              start fresh over an existing run dir
   --resume-anyway      resume even if this invocation disagrees with the checkpoint
-  --if-stale MODE      camera view staleness: rebuild | reuse | refuse | force
-  --init-from PATH     start from this checkpoint instead of the model's base weights
-  --no-vlm-weights     smolvla: train the action expert from scratch (VLM not loaded)
-  -- ARGS...           append these to lerobot-train verbatim; any flag this script
-                       already sets is refused, naming the flag that owns it
 USAGE
 }
 
@@ -84,34 +93,59 @@ AFTER_PID="" IF_STALE=rebuild INIT_FROM="" VLM_WEIGHTS=true
 DRY_RUN=0 SMOKE=0 FORCE=0 RESUME_ANYWAY=0
 PASSTHROUGH=()
 
+# lerobot-train spells its flags --flag=value; accept that everywhere, and split it
+# into --flag value before dispatch. Everything after a bare `--` is passthrough and is
+# left exactly as typed.
+ARGS=() ; seen_ddash=0
+for a in "$@"; do
+    if [ "$seen_ddash" = 1 ]; then ARGS+=("$a"); continue; fi
+    case "$a" in
+        --) seen_ddash=1; ARGS+=("$a") ;;
+        --*=*) ARGS+=("${a%%=*}" "${a#*=}") ;;
+        *) ARGS+=("$a") ;;
+    esac
+done
+set -- ${ARGS+"${ARGS[@]}"}
+
+# Where a flag is a straight pass to lerobot-train, it is SPELLED THE WAY LEROBOT SPELLS
+# IT, so there is nothing new to learn and `--batch_size=32` works here exactly as it
+# does there. The short forms are aliases, not the real names.
+#
+# Flags that are NOT a straight pass keep their own names on purpose -- they compute
+# something, and giving them lerobot's spelling would promise passthrough semantics that
+# do not hold. `--out` is the clearest case: it is the SWEEP directory, while lerobot's
+# --output_dir is the RUN directory inside it. Same word, different thing, different flag.
 while [ $# -gt 0 ]; do
     case "$1" in
+        # --- computed: no lerobot equivalent -----------------------------------------
         --model)         MODEL=$2; shift 2 ;;
         --dataset)       DATASET=$2; shift 2 ;;
         --cameras)       CAMERAS=$2; shift 2 ;;
         --train-mode)    MODE=$2; shift 2 ;;
-        --chunk)         CHUNK=$2; shift 2 ;;
-        --execute)       EXECUTE=$2; shift 2 ;;
-        --steps)         STEPS=$2; shift 2 ;;
-        --batch)         BATCH=$2; shift 2 ;;
-        --lr)            LR=$2; shift 2 ;;
-        --seed)          SEED=$2; shift 2 ;;
-        --save-freq)     SAVE_FREQ=$2; shift 2 ;;
-        --workers)       WORKERS=$2; shift 2 ;;
-        --log-freq)      LOG_FREQ=$2; shift 2 ;;
         --holdout)       HOLDOUT=$2; shift 2 ;;
         --name)          NAME=$2; shift 2 ;;
         --sweep)         SWEEP=$2; shift 2 ;;
         --out)           OUT=$2; shift 2 ;;
+        --init-from)     INIT_FROM=$2; shift 2 ;;
         --after-pid)     AFTER_PID=$2; shift 2 ;;
         --if-stale)      IF_STALE=$2; shift 2 ;;
-        --init-from)     INIT_FROM=$2; shift 2 ;;
-        --no-vlm-weights) VLM_WEIGHTS=false; shift ;;
-        --)              shift; PASSTHROUGH=("$@"); break ;;
         --smoke)         SMOKE=1; shift ;;
         --dry-run)       DRY_RUN=1; shift ;;
         --force)         FORCE=1; shift ;;
         --resume-anyway) RESUME_ANYWAY=1; shift ;;
+        # --- lerobot's own spelling, plus a short alias ------------------------------
+        --steps)                      STEPS=$2; shift 2 ;;
+        --seed)                       SEED=$2; shift 2 ;;
+        --batch_size|--batch)         BATCH=$2; shift 2 ;;
+        --num_workers|--workers)      WORKERS=$2; shift 2 ;;
+        --save_freq|--save-freq)      SAVE_FREQ=$2; shift 2 ;;
+        --log_freq|--log-freq)        LOG_FREQ=$2; shift 2 ;;
+        --policy.chunk_size|--chunk)  CHUNK=$2; shift 2 ;;
+        --policy.n_action_steps|--execute) EXECUTE=$2; shift 2 ;;
+        --policy.optimizer_lr|--lr)   LR=$2; shift 2 ;;
+        --policy.load_vlm_weights)    VLM_WEIGHTS=$2; shift 2 ;;
+        --no-vlm-weights)             VLM_WEIGHTS=false; shift ;;
+        --)              shift; PASSTHROUGH=("$@"); break ;;
         -h|--help)       usage; exit 0 ;;
         *) die "unknown flag: $1  (--help for the list)" ;;
     esac
@@ -367,7 +401,7 @@ fi
 rc=$?
 if [ $rc -eq 0 ]; then
     echo "[$(date +%T)] $NAME finished ok -> $DIR"
-    echo "  score it:  $PY $VLA_ONNX/smolvla/excavator/eval_compare.py --sweep $OUT"
+    echo "  score it:  $PY $VLA_ONNX/eval/compare.py --sweep $OUT"
 else
     echo "[$(date +%T)] $NAME FAILED (rc=$rc), see $LOG" >&2
     tail -20 "$LOG" >&2
