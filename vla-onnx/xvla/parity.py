@@ -120,7 +120,7 @@ def emit_reference(args) -> None:
     cfg_obj = PreTrainedConfig.from_pretrained(str(args.checkpoint))
     cfg_obj.device = "cpu"
     ref = XVLAPolicy.from_pretrained(str(args.checkpoint), config=cfg_obj)
-    # float(), to match the exporter exactly. A bf16 fine-tune (run_digging.sh trains with
+    # float(), to match the exporter exactly. A bf16 fine-tune (run_training.sh trains with
     # --policy.dtype=bfloat16 by default) loads with bf16 weights, and export_split_onnx
     # traces every module through `.eval().float()` -- so the GRAPHS are fp32 upcast from
     # those weights. Comparing fp32 graphs against a bf16 reference would either fail

@@ -31,4 +31,5 @@ fi
 
 "$VENV/python" "$HERE/preflight.py" --run "$RUN"
 echo
-echo "X-VLA fine-tuning stack is ready. Smoke test: bash $HERE/smoke.sh $RUN"
+echo "X-VLA fine-tuning stack is ready. Smoke test:"
+echo "  $VLA_ONNX/run_training.sh --model xvla --dataset <recording> --cameras cam1 --smoke"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Compare SmolVLA runs on a common time base.
+"""Compare VLA runs on a common time base.
 
 The runs cannot be compared by training loss: variants may be trained on a
 different temporal decimation of the same data, or on a different set of camera
@@ -28,16 +28,35 @@ reported too, but a model can have decent MAE and still drift.
 Two trivial baselines are included. If a run does not beat them it has not
 learned the task, and the comparison between runs is moot.
 
+EVERYTHING IS READ FROM THE CHECKPOINT. There used to be a PRESETS table here holding,
+per experiment, the source recording, the pinned instruction and a hand-written list of
+held-out episodes. Every field of it drifted:
+
+  * `digging_dry2` was written when that recording had 78 episodes. It grew to 242, and
+    the preset went on scoring 8 of the 24 held-out episodes and reporting the result as
+    the model's error -- silently, with a plausible table.
+  * `digging_clean` listed 10 "held-out" episodes that the trainer's own rule puts in the
+    TRAINING set. It was defused only because one queue script happened to export a
+    matching override; running the trainer directly leaked the eval set with no error.
+  * `digging_clean` also pinned "move the sand to the container" while its dataset says
+    "move sand to container". The policy conditions on that embedding, so it was scored
+    on an instruction it never saw. Well-formed prefix, no error, wrong numbers.
+
+A checkpoint already records all of it, and `run_fps()` below was already reading the
+run's own train_config.json for exactly this reason. So the table is gone: point this at
+a checkpoint and the source, the split and the instructions come from the run itself.
+Drift is not fixed here, it is made unrepresentable.
+
 Usage:
-    python eval_compare.py --preset digging
-    python eval_compare.py --preset kaivuri --runs A B --horizons 1.5
+    python eval_compare.py --ckpt outputs/digging_demo/dry2_ir/checkpoints/001000
+    python eval_compare.py --sweep outputs/digging_demo --horizons 0.17 0.3
+    python eval_compare.py --ckpt A=<path> --ckpt B=<path> --only-task "move rock to container"
 """
 
 import argparse
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from vla_common.paths import dataset, playbook
 
 import numpy as np
 import pandas as pd
@@ -46,171 +65,162 @@ import torch
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 
-ROOT = playbook("smolvla")
+from vla_common.dataset.split import episode_count
+
+# Runs whose dataset fed observation.state as all zeros, with the normalizer patched to
+# mean 0 / std 1 so normalization is the identity. Feeding them the source recording's
+# real state would push raw joint values (|state| up to ~120) into a model that trained
+# on zeros. This is the one thing a checkpoint does not record -- the dataset it names is
+# gone-by-design -- so it stays a literal, keyed on the repo_id train_config.json carries.
+STATE_BLIND_REPOS = {"local/masi_kaivuri_nostate"}
+
+DEFAULT_STRIDE = 15
 
 
-@dataclass
-class Preset:
-    """One evaluation setup: which recording is ground truth, and how to slice it."""
+@dataclass(frozen=True)
+class RunSpec:
+    """What one checkpoint says about how it was trained.
 
-    src: Path                      # source dataset, always at native fps with ALL cameras
-    out_dir: Path                  # sweep dir holding the runs
-    task: str | None               # instruction fed to every model; None = per-episode
-    val_episodes: list[int]        # held out from training, scored here
-    stride_eval: int               # spacing between eval start points, in source frames
-    state_blind_repos: set[str] = field(default_factory=set)
+    Built by `resolve_run`. Replaces the old hand-written Preset: every field here is
+    read out of the run rather than typed next to it.
+    """
+
+    ckpt: Path              # .../checkpoints/<step>/pretrained_model
+    src: Path               # source recording, native fps, ALL cameras
+    train_episodes: list[int]
+    val_episodes: list[int]
+    repo_id: str
+    policy_type: str
+    fps: int                # rate the checkpoint's own dataset was clocked at
 
 
-PRESETS = {
-    # DEPRECATED as a source of results (2026-08-19): this recording predates the
-    # frame-arrival pacing fix (kaivuriprokkis b8b2ccd), so its loop timing slipped while
-    # `timestamp` reported a flawless frame_index/fps. Do not draw conclusions from runs
-    # trained on it. Kept as a REGRESSION FIXTURE for this script — A@020000 must still
-    # score disp_err 0.1320 against a 0.3901 zero-action baseline.
-    # The 2026-08-12/13 sweep: one camera, 4-dim state, blocks task. Start points land
-    # on multiples of 15 so the same source frame exists in the 30/10/6 fps variants.
-    "kaivuri": Preset(
-        src=dataset("vanhat/masi_kaivuri_juusto"),  # moved out of Desktop/ 2026-08-19
-        out_dir=ROOT / "outputs/excavator",
-        task="scoop blocks and dump it to the left",
-        val_episodes=[3, 11, 19, 27],
-        stride_eval=15,
-        # Runs trained on a state-blind dataset saw observation.state == 0 at every frame,
-        # and their normalizer was patched to mean 0 / std 1, which makes normalization the
-        # identity. Feeding them the source dataset's real state would push raw joint values
-        # (|state| up to ~120) straight into the model instead of the zeros it trained on.
-        state_blind_repos={"local/masi_kaivuri_nostate"},
-    ),
-    # The 2026-08-19 camera-count sweep: IR-only vs IR+RGB, 3-dim state (slew left out,
-    # its yaw origin drifts), sand-to-container task. All runs are 30 fps, so the stride
-    # only controls how many start points we score.
-    "digging": Preset(
-        src=dataset("masi_digging"),
-        out_dir=ROOT / "outputs/digging",
-        task="move the sand to the container",
-        val_episodes=[5, 15, 25, 35, 45, 55, 65, 75],
-        stride_eval=15,
-    ),
-    # The 2026-08-20 re-run on the GROWN dataset: 189 episodes / 113781 frames. The first
-    # 82 episodes are byte-identical to the sweep above (verified: they still sum to 41765
-    # frames) and 107 were appended, so `digging` above remains reproducible and this
-    # held-out list is a clean superset of it. Same task, same 3-dim state, same cameras.
-    # val_episodes must stay in step with run_digging.sh, which derives the same
-    # range(5, N_EPS, 10) from the dataset's own info.json.
-    "digging189": Preset(
-        src=dataset("masi_digging"),
-        out_dir=ROOT / "outputs/digging189",
-        task="move the sand to the container",
-        val_episodes=list(range(5, 189, 10)),
-        stride_eval=15,
-    ),
-    # Boundary dead air trimmed off every episode and the dirty 83-90 block skipped
-    # (built by make_trim_variant.py): 181 episodes / 103356 frames.
-    # val_episodes are the RENUMBERED ids of the same recordings digging189 held out,
-    # less source ep 85 which fell inside the dropped block -- so scores here are
-    # directly comparable to that sweep. Source ep -> clean ep is x if x < 83 else x-8.
-    "digging_clean": Preset(
-        src=ROOT / "datasets/masi_digging_clean",
-        out_dir=ROOT / "outputs/digging_clean",
-        task="move the sand to the container",
-        val_episodes=[5, 15, 25, 35, 45, 55, 65, 75,
-                      87, 97, 107, 117, 127, 137, 147, 157, 167, 177],
-        stride_eval=15,
-    ),
-    # The 2026-08-28 dry-sand session: 62 episodes / 100490 frames, same rig and
-    # schema as digging (cam1 IR + cam2 RGB, 3-dim state, 4-dim action). Episodes are
-    # ~2.9x longer than digging's (1621 vs 571 frames), so 62 episodes carry nearly the
-    # same frame budget -- and make_trim_variant reports only 0.2% cuttable, hence no
-    # _clean variant to point at: src is the Desktop recording itself.
-    #
-    # THE TASK STRING IS NOT THE SAME as every other digging preset above. This
-    # recording says "move sand to container"; the others say "move the sand to the
-    # container". SmolVLA conditions on the language embedding, so scoring a dry run
-    # with the older phrasing feeds it an instruction it never trained on -- and
-    # nothing errors: the prefix is well-formed and the numbers come out plausible but
-    # wrong. Copied from meta/tasks.parquet, not from the preset above.
-    "digging_dry": Preset(
-        src=dataset("masi_digging_dry"),
-        out_dir=ROOT / "outputs/digging_dry",
-        task="move sand to container",
-        val_episodes=list(range(5, 62, 10)),
-        stride_eval=15,
-    ),
-    # The 2026-08-31 session: 78 episodes / 65655 frames, same rig and schema again --
-    # and the FIRST TWO-TASK recording. Episodes 0-62 are "move sand to container",
-    # 63-77 are "move rock to container", one instruction per episode.
-    #
-    # `task=None` is the point of this preset: it makes tasks_for_points feed each
-    # episode its OWN instruction. Pinning a string the way every preset above does
-    # would score all 15 rock episodes under the sand instruction and quietly report
-    # the result as the model's error.
-    #
-    # Held out is the usual every-10th-from-5, which lands on 5/15/25/35/45/55 in the
-    # sand block and 65/75 in the rock block -- both tasks are represented, roughly in
-    # proportion (2 of 15 rock, 6 of 63 sand). Keep it in step with run_digging.sh,
-    # which derives range(5, 78, 10) from the dataset's own info.json.
-    #
-    # It is also the first recording to span TWO parquet shards; see read_shards.
-    "digging_dry2": Preset(
-        src=dataset("masi_digging_dry_2"),
-        out_dir=ROOT / "outputs/digging_dry2",
-        task=None,
-        val_episodes=list(range(5, 78, 10)),
-        stride_eval=15,
-    ),
-    # The same run and the same held-out episodes as digging_dry2, split by instruction.
-    # The headline table blends both tasks into one mean, which cannot say whether the
-    # model learned one instruction and is dragging the other along: 87 of the 409 points
-    # are rock, so a rock-only failure would move the blended number by very little.
-    # These two score the halves separately. They still set task=None -- each episode gets
-    # its own instruction, exactly as in the combined run, so the numbers decompose.
-    # Rock rests on only 2 held-out episodes: read it as a smoke test, not a tight estimate.
-    "digging_dry2_sand": Preset(
-        src=dataset("masi_digging_dry_2"),
-        out_dir=ROOT / "outputs/digging_dry2",
-        task=None,
-        val_episodes=[5, 15, 25, 35, 45, 55],
-        stride_eval=15,
-    ),
-    "digging_dry2_rock": Preset(
-        src=dataset("masi_digging_dry_2"),
-        out_dir=ROOT / "outputs/digging_dry2",
-        task=None,
-        val_episodes=[65, 75],
-        stride_eval=15,
-    ),
-}
+def resolve_run(ckpt: Path) -> RunSpec:
+    """Read a checkpoint's training setup out of its own train_config.json.
+
+    THE SOURCE RECORDING IS RESOLVED THROUGH THE SYMLINK. `dataset.root` names what the
+    run trained on, which for a camera-subset run is a *variant* -- a metadata-only view
+    whose `data/` is a symlink into the recording (vla_common.dataset.camera_variant).
+    Scoring must use the recording itself, because it is the only copy that still has
+    every camera, and a two-camera run and a one-camera run have to be fed from the same
+    frames to be comparable. Resolving `<root>/data` and taking its parent gives the
+    recording for a variant and the root itself for a plain dataset, with no table.
+
+    HELD OUT IS THE COMPLEMENT, NEVER A LIST. `dataset.episodes` is what the trainer was
+    told to train on; everything else in the recording was held out by construction. That
+    is what makes this immune to the drift that killed the presets.
+    """
+    ckpt = Path(ckpt).expanduser().resolve()
+    if ckpt.name != "pretrained_model" and (ckpt / "pretrained_model").is_dir():
+        ckpt = ckpt / "pretrained_model"
+    cfg_path = ckpt / "train_config.json"
+    if not cfg_path.exists():
+        raise SystemExit(f"{ckpt}: no train_config.json -- not a LeRobot checkpoint?")
+    cfg = json.loads(cfg_path.read_text())
+
+    root = Path(cfg["dataset"]["root"]).expanduser()
+    if not root.exists():
+        raise SystemExit(
+            f"{ckpt}: trained on {root}, which no longer exists. The recording is the "
+            f"only copy of the source data -- it cannot be scored without it.")
+    src = (root / "data").resolve().parent
+
+    train_eps = cfg["dataset"].get("episodes")
+    n = episode_count(src)
+    if train_eps is None:
+        raise SystemExit(
+            f"{ckpt}: train_config.json records no dataset.episodes, so it trained on the "
+            f"whole recording and nothing was held out. There is no honest split to score.")
+    train_eps = sorted(int(e) for e in train_eps)
+    val_eps = [e for e in range(n) if e not in set(train_eps)]
+    if not val_eps:
+        raise SystemExit(f"{ckpt}: trained on all {n} episodes -- nothing held out to score.")
+
+    info = json.loads((root / "meta" / "info.json").read_text())
+    return RunSpec(ckpt=ckpt, src=src, train_episodes=train_eps, val_episodes=val_eps,
+                   repo_id=cfg["dataset"]["repo_id"], policy_type=cfg["policy"]["type"],
+                   fps=int(info["fps"]))
+
+
+def agree(specs: dict) -> RunSpec:
+    """One RunSpec for a set of runs, or a hard stop.
+
+    Blending runs that held out different episodes, or that trained on different
+    recordings, produces a table whose rows are not comparable -- which is the exact
+    failure this rewrite exists to remove, so it is an error and not a warning.
+    """
+    first_label, first = next(iter(specs.items()))
+    for label, spec in specs.items():
+        if spec.src != first.src:
+            raise SystemExit(
+                f"{label} trained on {spec.src.name} but {first_label} trained on "
+                f"{first.src.name}. Scoring them in one table would compare different data.")
+        if spec.val_episodes != first.val_episodes:
+            raise SystemExit(
+                f"{label} held out {len(spec.val_episodes)} episodes and {first_label} held "
+                f"out {len(first.val_episodes)}. One of them would be scored on episodes it "
+                f"trained on. Score them separately.")
+    return first
+
+
+def _ckpt_arg(spec: str):
+    """`LABEL=PATH` or a bare PATH whose run directory names it."""
+    if "=" in spec:
+        label, path = spec.split("=", 1)
+        return label, Path(path).expanduser()
+    path = Path(spec).expanduser()
+    parts = [q for q in path.parts if q not in ("pretrained_model", "checkpoints")]
+    # .../<run>/checkpoints/<step>/pretrained_model -> "<run>@<step>"
+    return (f"{parts[-2]}@{parts[-1]}" if len(parts) >= 2 else path.name), path
 
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--preset", choices=sorted(PRESETS), default="digging")
-    p.add_argument("--runs", nargs="*", default=None, help="run names (default: every run with a checkpoint)")
-    p.add_argument("--checkpoint", default="last", help="checkpoint to load (default: last)")
+    p.add_argument("--ckpt", action="append", default=[], metavar="[LABEL=]PATH",
+                   help="a checkpoint to score; repeat for a multi-run table")
+    p.add_argument("--sweep", type=Path, default=None,
+                   help="score every run under this sweep dir at --checkpoint")
+    p.add_argument("--checkpoint", default="last", help="which checkpoint --sweep picks (default: last)")
+    p.add_argument("--only-task", default=None, metavar="INSTRUCTION",
+                   help="score only the held-out episodes carrying this instruction")
     p.add_argument("--horizons", type=float, nargs="+", default=[1.5, 4.0], help="horizons in seconds")
+    p.add_argument("--stride", type=int, default=DEFAULT_STRIDE,
+                   help=f"spacing between eval start points, in source frames (default {DEFAULT_STRIDE})")
     p.add_argument("--batch-size", type=int, default=8)
-    p.add_argument("--n-draws", type=int, default=1,
-                   help="average this many flow-matching noise draws per eval point "
-                        "(default 1). Use 4 to compare architectures without charging "
-                        "X-VLA for sampler variance SmolVLA does not have")
+    p.add_argument("--n-draws", type=int, default=None,
+                   help="average this many flow-matching noise draws per eval point. Default is 1 "
+                        "for a single architecture and 4 when the table spans more than one: "
+                        "X-VLA gains ~18.5%% from averaging draws and SmolVLA ~0%%, so scoring a "
+                        "mixed table at 1 charges X-VLA for sampler variance SmolVLA does not have")
     p.add_argument("--device", default="cuda")
-    p.add_argument("--out-dir", type=Path, default=None, help="override the preset's sweep dir")
-    p.add_argument("--extra-runs", nargs="*", default=[], metavar="LABEL=PATH",
-                   help="runs from another sweep dir (e.g. xvla_ir=/path/to/xvla/outputs/digging/ir), "
-                        "so architectures kept in separate projects still score in one table")
     p.add_argument("--json-out", type=Path, default=None)
     args = p.parse_args()
-    args.preset = PRESETS[args.preset]
-    if args.out_dir is None:
-        args.out_dir = args.preset.out_dir
-    if args.json_out is None:
-        args.json_out = args.out_dir / "comparison.json"
+    if not args.ckpt and args.sweep is None:
+        raise SystemExit("nothing to score: pass --ckpt <path> or --sweep <dir>")
     return args
 
 
-def source_meta(preset):
+def collect_ckpts(args) -> dict:
+    """{label: checkpoint dir} from --ckpt and --sweep."""
+    out = {}
+    if args.sweep is not None:
+        sweep = args.sweep.expanduser()
+        if not sweep.is_dir():
+            raise SystemExit(f"no such sweep dir: {sweep}")
+        for run in sorted(d for d in sweep.iterdir() if (d / "checkpoints").is_dir()):
+            ck = run / "checkpoints" / args.checkpoint / "pretrained_model"
+            if ck.exists():
+                out[f"{run.name}@{args.checkpoint}"] = ck
+        if not out:
+            raise SystemExit(f"no run under {sweep} has a '{args.checkpoint}' checkpoint")
+    for spec in args.ckpt:
+        label, path = _ckpt_arg(spec)
+        out[label] = path
+    return out
+
+
+def source_meta(spec):
     """Native fps and action joint names of the source recording."""
-    info = json.loads((preset.src / "meta" / "info.json").read_text())
+    info = json.loads((spec.src / "meta" / "info.json").read_text())
     return int(info["fps"]), list(info["features"]["action"]["names"])
 
 
@@ -233,9 +243,9 @@ def read_shards(dirpath):
     return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
 
 
-def load_ground_truth(preset):
-    df = read_shards(preset.src / "data")
-    eps = read_shards(preset.src / "meta" / "episodes")
+def load_ground_truth(spec):
+    df = read_shards(spec.src / "data")
+    eps = read_shards(spec.src / "meta" / "episodes")
     actions = np.stack(df["action"].to_numpy()).astype(np.float32)
     bounds = {
         int(r["episode_index"]): (int(r["dataset_from_index"]), int(r["dataset_to_index"]))
@@ -246,15 +256,15 @@ def load_ground_truth(preset):
     span = max(hi for _, hi in bounds.values())
     if span != len(actions):
         raise SystemExit(
-            f"{preset.src}: episode table ends at row {span} but data has {len(actions)} rows "
+            f"{spec.src}: episode table ends at row {span} but data has {len(actions)} rows "
             f"-- shard concatenation is out of step with dataset_from_index/dataset_to_index")
     return actions, bounds
 
 
-def episode_tasks(preset):
+def episode_tasks(spec):
     """{episode_index: instruction} straight from the recording's own metadata."""
     out = {}
-    for _, r in read_shards(preset.src / "meta" / "episodes").iterrows():
+    for _, r in read_shards(spec.src / "meta" / "episodes").iterrows():
         names = [str(t) for t in r["tasks"]]
         if len(names) != 1:
             raise SystemExit(f"episode {int(r['episode_index'])} has {len(names)} tasks {names}; "
@@ -263,47 +273,51 @@ def episode_tasks(preset):
     return out
 
 
-def tasks_for_points(preset, bounds, points):
+def select_episodes(spec, only_task):
+    """Held-out episodes, optionally narrowed to one instruction.
+
+    This is what the old `digging_dry2_sand` / `_rock` presets were: a slice of one run's
+    held-out set, so the halves of a two-task table decompose. As a preset it went stale
+    the moment the recording grew -- the rock slice was pinned to 2 episodes when the
+    session had come to hold 10. Derived from the recording, it cannot.
+    """
+    if only_task is None:
+        return spec.val_episodes
+    per_ep = episode_tasks(spec)
+    recorded = sorted(set(per_ep.values()))
+    if only_task not in recorded:
+        raise SystemExit(f"--only-task {only_task!r} is not in {spec.src.name}: {recorded}")
+    picked = [e for e in spec.val_episodes if per_ep[e] == only_task]
+    if not picked:
+        raise SystemExit(f"no held-out episode carries {only_task!r} "
+                         f"(held out: {len(spec.val_episodes)} episodes)")
+    return picked
+
+
+def tasks_for_points(spec, bounds, val_episodes, points):
     """The instruction to feed at each eval start point.
 
-    SmolVLA conditions on the language embedding, so the instruction is an input like
-    any other -- and a wrong-but-well-formed one produces a plausible table rather than
-    an error (that is how the "move the sand to the container" / "move sand to
-    container" mismatch could have gone unnoticed). Hence both branches here check
-    themselves against the recording:
-
-    * single-task preset -- `task` is pinned, and must be the string the dataset
-      actually carries, and the dataset must really only have one.
-    * multi-task preset -- `task=None`, and each point takes ITS OWN episode's
-      instruction. Pinning one string across a two-task recording would score every
-      rock episode under the sand instruction, which is not a number about anything.
+    Every point takes ITS OWN episode's instruction. The old code could also pin one
+    string across a whole preset, which on a two-task recording scored every rock episode
+    under the sand instruction -- and because the policy conditions on the language
+    embedding, that produces a plausible table rather than an error. There is no reason to
+    ever want it, so the option is gone.
     """
-    per_ep = episode_tasks(preset)
-    recorded = sorted(set(per_ep.values()))
-
-    if preset.task is not None:
-        if len(recorded) > 1:
-            raise SystemExit(
-                f"{preset.src} carries {len(recorded)} tasks {recorded}, but the preset pins "
-                f"one ({preset.task!r}). Set task=None to score each episode with its own.")
-        if preset.task not in recorded:
-            raise SystemExit(f"preset task {preset.task!r} is not in {preset.src}: {recorded}")
-        return [preset.task] * len(points)
-
+    per_ep = episode_tasks(spec)
     owner = {}
-    for ep in preset.val_episodes:
+    for ep in val_episodes:
         start, stop = bounds[ep]
         owner.update(dict.fromkeys(range(start, stop), per_ep[ep]))
     return [owner[p] for p in points]
 
 
-def eval_points(preset, bounds, max_horizon_s, src_fps):
+def eval_points(bounds, val_episodes, max_horizon_s, src_fps, stride=DEFAULT_STRIDE):
     """Source-frame indices to evaluate from, with a full horizon left in the episode."""
     need = int(round(max_horizon_s * src_fps))
     points = []
-    for ep in preset.val_episodes:
+    for ep in val_episodes:
         start, stop = bounds[ep]
-        points += [i for i in range(start, stop - need, preset.stride_eval)]
+        points += [i for i in range(start, stop - need, stride)]
     return points
 
 
@@ -332,7 +346,7 @@ def run_fps(ckpt, src_fps):
     return src_fps
 
 
-def predict_chunks(ckpt, src_ds, points, batch_size, device, preset, src_fps, point_tasks,
+def predict_chunks(ckpt, src_ds, points, batch_size, device, spec, src_fps, point_tasks,
                    n_draws=1):
     """Run one model over all eval points. Returns (N, chunk, action_dim) unnormalized
     actions and the fps its chunk is clocked at.
@@ -359,7 +373,7 @@ def predict_chunks(ckpt, src_ds, points, batch_size, device, preset, src_fps, po
     pre, post = make_pre_post_processors(policy.config, pretrained_path=ckpt)
     repo_id = json.loads((ckpt / "train_config.json").read_text())["dataset"]["repo_id"]
     fps = run_fps(ckpt, src_fps)
-    state_blind = repo_id in preset.state_blind_repos
+    state_blind = repo_id in STATE_BLIND_REPOS
 
     # Feed exactly the cameras this checkpoint was trained on. An IR-only run and an
     # IR+RGB run are then scored on the same frames without either seeing an input it
@@ -367,7 +381,7 @@ def predict_chunks(ckpt, src_ds, points, batch_size, device, preset, src_fps, po
     cam_keys = list(policy.config.image_features)
     missing = [k for k in cam_keys if k not in src_ds.meta.features]
     if missing:
-        raise SystemExit(f"{ckpt} expects {missing}, absent from {preset.src}")
+        raise SystemExit(f"{ckpt} expects {missing}, absent from {spec.src}")
 
     draws = []
     for draw in range(n_draws):
@@ -420,32 +434,44 @@ def score(pred, gt, joints, src_fps):
 
 def main():
     args = parse_args()
-    preset = args.preset
-    src_fps, joints = source_meta(preset)
-    actions, bounds = load_ground_truth(preset)
+    ckpts = collect_ckpts(args)
+
+    # Resolve every run first, then insist they describe the same experiment. Doing this
+    # before any inference means a mismatched table fails in a second rather than after
+    # the GPU has chewed through the first model.
+    specs = {label: resolve_run(path) for label, path in ckpts.items()}
+    spec = agree(specs)
+
+    n_draws = args.n_draws
+    if n_draws is None:
+        n_draws = 4 if len({s.policy_type for s in specs.values()}) > 1 else 1
+
+    src_fps, joints = source_meta(spec)
+    actions, bounds = load_ground_truth(spec)
+    val_episodes = select_episodes(spec, args.only_task)
     max_h = max(args.horizons)
-    points = eval_points(preset, bounds, max_h, src_fps)
-    point_tasks = tasks_for_points(preset, bounds, points)
-    print(f"source {preset.src.name} @ {src_fps}fps, joints {joints}")
-    if args.n_draws > 1:
-        print(f"averaging {args.n_draws} noise draws per eval point")
-    print(f"evaluating on {len(points)} start points from held-out episodes {preset.val_episodes}")
+    points = eval_points(bounds, val_episodes, max_h, src_fps, args.stride)
+    if not points:
+        raise SystemExit(f"no eval point survives a {max_h}s horizon in episodes {val_episodes}")
+    point_tasks = tasks_for_points(spec, bounds, val_episodes, points)
+
+    json_out = args.json_out
+    if json_out is None:
+        json_out = (args.sweep.expanduser() if args.sweep else spec.ckpt.parent) / "comparison.json"
+
+    print(f"source {spec.src.name} @ {src_fps}fps, joints {joints}")
+    print(f"held out {len(spec.val_episodes)} of {len(spec.train_episodes) + len(spec.val_episodes)} "
+          f"episodes, derived from the run's own dataset.episodes")
+    if args.only_task:
+        print(f"scoring the {len(val_episodes)} of them that carry {args.only_task!r}")
+    if n_draws > 1:
+        why = "mixed architectures" if args.n_draws is None else "requested"
+        print(f"averaging {n_draws} noise draws per eval point ({why})")
+    print(f"evaluating on {len(points)} start points from episodes {val_episodes}")
     counts = {t: point_tasks.count(t) for t in sorted(set(point_tasks))}
     print("instructions: " + ", ".join(f"{t!r} x{n}" for t, n in counts.items()) + "\n")
 
-    runs = args.runs
-    if runs is None:
-        runs = sorted(d.name for d in args.out_dir.iterdir() if (d / "checkpoints" / args.checkpoint).exists())
-    run_dirs = {name: args.out_dir / name for name in runs}
-    for spec in args.extra_runs:
-        if "=" not in spec:
-            raise SystemExit(f"--extra-runs wants LABEL=PATH, got {spec!r}")
-        label, path = spec.split("=", 1)
-        run_dirs[label] = Path(path).expanduser().resolve()
-    if not run_dirs:
-        raise SystemExit(f"no runs with a '{args.checkpoint}' checkpoint under {args.out_dir}")
-
-    src_ds = LeRobotDataset(repo_id="local/src", root=preset.src, video_backend="torchcodec")
+    src_ds = LeRobotDataset(repo_id="local/src", root=spec.src, video_backend="torchcodec")
 
     # Ground truth on the source grid, per horizon.
     n_max = int(round(max_h * src_fps))
@@ -453,33 +479,32 @@ def main():
     act_dim = gt_full.shape[-1]
 
     results = {}
-    for name, run_dir in run_dirs.items():
-        ckpt = run_dir / "checkpoints" / args.checkpoint / "pretrained_model"
-        if not ckpt.exists():
-            print(f"[{name}] no checkpoint at {ckpt}, skipping")
-            continue
+    for name, ckpt in ckpts.items():
         print(f"[{name}] running inference ...", flush=True)
         chunk, fps, cams, ptype = predict_chunks(
-            ckpt, src_ds, points, args.batch_size, args.device, preset, src_fps, point_tasks,
-            n_draws=args.n_draws)
+            specs[name].ckpt, src_ds, points, args.batch_size, args.device, spec, src_fps,
+            point_tasks, n_draws=n_draws)
         covered = chunk.shape[1] / fps
         cam_short = [c.rsplit(".", 1)[-1] for c in cams]
         print(f"[{name}] {ptype}, cameras {cam_short}, chunk {chunk.shape[1]} @ {fps}fps = {covered:.2f}s")
         results[name] = {"fps": fps, "chunk": int(chunk.shape[1]), "covers_s": covered,
-                         "n_draws": args.n_draws,
+                         "n_draws": n_draws, "checkpoint": str(specs[name].ckpt),
                          "cameras": cam_short, "policy": ptype, "horizons": {}}
         for h in args.horizons:
             n = int(round(h * src_fps))
             if covered + 1e-6 < h:
+                # A run whose chunk is shorter than the horizon used to vanish from the
+                # table with no explanation. Say so instead.
+                print(f"[{name}] chunk covers {covered:.2f}s, short of the {h}s horizon -- not scored")
                 continue
             results[name]["horizons"][f"{h}s"] = score(
                 to_30hz(chunk, fps, n, src_fps), gt_full[:, :n], joints, src_fps)
 
     # Trivial baselines on the same points and horizons. The mean is taken over the
     # training episodes only, so the baseline gets no more information than the models.
-    train_mask = np.ones(len(actions), bool)
-    for ep in preset.val_episodes:
-        train_mask[slice(*bounds[ep])] = False
+    train_mask = np.zeros(len(actions), bool)
+    for ep in spec.train_episodes:
+        train_mask[slice(*bounds[ep])] = True
     train_mean = actions[train_mask].mean(axis=0)
     for label, const in [("zero-action", np.zeros(act_dim, np.float32)), ("mean-action", train_mean)]:
         results[label] = {"fps": src_fps, "chunk": n_max, "covers_s": max_h, "cameras": [],
@@ -489,30 +514,37 @@ def main():
             pred = np.broadcast_to(const, (len(points), n, act_dim))
             results[label]["horizons"][f"{h}s"] = score(pred, gt_full[:, :n], joints, src_fps)
 
+    width = max(14, max(len(n) for n in results) + 2)
     for h in args.horizons:
         key = f"{h}s"
         rows = [(n, r) for n, r in results.items() if key in r["horizons"]]
         if not rows:
             continue
-        print(f"\n{'=' * 97}\nhorizon {h}s   (lower is better; move_ratio near 1.0 = right amount of motion)")
-        print(f"{'run':<14}{'policy':>9}{'cams':>12}{'fps':>5}{'chunk':>7}{'covers':>8}{'MAE':>9}{'disp_err':>10}{'move_ratio':>12}")
-        print("-" * 97)
+        print(f"\n{'=' * (83 + width)}\nhorizon {h}s   (lower is better; move_ratio near 1.0 = right amount of motion)")
+        print(f"{'run':<{width}}{'policy':>9}{'cams':>12}{'fps':>5}{'chunk':>7}{'covers':>8}{'MAE':>9}{'disp_err':>10}{'move_ratio':>12}")
+        print("-" * (83 + width))
         for name, r in sorted(rows, key=lambda x: x[1]["horizons"][key]["disp_err"]):
             s = r["horizons"][key]
             print(
-                f"{name:<14}{r.get('policy','?'):>9}{'+'.join(r['cameras']) or '-':>12}"
+                f"{name:<{width}}{r.get('policy','?'):>9}{'+'.join(r['cameras']) or '-':>12}"
                 f"{r['fps']:>5}{r['chunk']:>7}{r['covers_s']:>7.1f}s"
                 f"{s['mae']:>9.4f}{s['disp_err']:>10.4f}{s['move_ratio']:>12.2f}"
             )
         print("\nper-joint displacement error:")
-        print(f"{'run':<14}" + "".join(f"{j:>10}" for j in joints))
+        print(f"{'run':<{width}}" + "".join(f"{j:>10}" for j in joints))
         for name, r in sorted(rows, key=lambda x: x[1]["horizons"][key]["disp_err"]):
             pj = r["horizons"][key]["disp_err_per_joint"]
-            print(f"{name:<14}" + "".join(f"{pj[j]:>10.4f}" for j in joints))
+            print(f"{name:<{width}}" + "".join(f"{pj[j]:>10.4f}" for j in joints))
 
-    args.json_out.parent.mkdir(parents=True, exist_ok=True)
-    args.json_out.write_text(json.dumps(results, indent=2))
-    print(f"\nwrote {args.json_out}")
+    json_out.parent.mkdir(parents=True, exist_ok=True)
+    json_out.write_text(json.dumps({
+        "source": str(spec.src),
+        "held_out_episodes": spec.val_episodes,
+        "scored_episodes": val_episodes,
+        "only_task": args.only_task,
+        "runs": results,
+    }, indent=2))
+    print(f"\nwrote {json_out}")
 
 
 if __name__ == "__main__":

@@ -11,9 +11,13 @@ reports -- identical source-rate observations for every model, each model fed on
 the cameras it was trained on, each chunk zero-order held onto a common grid,
 scored on integrated command error.
 
+Like eval_compare, the source recording, the held-out split and the instructions are read
+out of each checkpoint's own train_config.json rather than a hand-maintained preset -- see
+the note at the top of eval_compare.py for what that table cost.
+
 Usage:
-    python eval_curve.py --preset digging
-    python eval_curve.py --preset kaivuri --out-dir <sweep dir>
+    python eval_curve.py --sweep outputs/digging_demo --horizon 0.17
+    python eval_curve.py --sweep <dir> --runs dry2_ir --only-task "move rock to container"
 """
 
 import argparse
@@ -27,11 +31,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from eval_compare import (
-    PRESETS,
+    DEFAULT_STRIDE,
+    agree,
     eval_points,
     load_ground_truth,
     predict_chunks,
+    resolve_run,
     score,
+    select_episodes,
     source_meta,
     tasks_for_points,
     to_30hz,
@@ -47,10 +54,13 @@ BASELINE_COLOR = "#52514e"
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--preset", choices=sorted(PRESETS), default="digging")
-    p.add_argument("--out-dir", type=Path, default=None, help="override the preset's sweep dir")
-    p.add_argument("--runs", nargs="*", default=None)
+    p.add_argument("--sweep", type=Path, required=True,
+                   help="sweep dir holding the runs, e.g. outputs/digging_demo")
+    p.add_argument("--runs", nargs="*", default=None, help="run names (default: all with checkpoints)")
+    p.add_argument("--only-task", default=None, metavar="INSTRUCTION",
+                   help="score only the held-out episodes carrying this instruction")
     p.add_argument("--horizon", type=float, default=1.5, help="scoring horizon in seconds")
+    p.add_argument("--stride", type=int, default=DEFAULT_STRIDE)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--n-draws", type=int, default=1,
                    help="average this many flow-matching noise draws per eval point "
@@ -63,30 +73,50 @@ def parse_args():
 
 def main():
     args = parse_args()
-    preset = PRESETS[args.preset]
-    if args.out_dir is None:
-        args.out_dir = preset.out_dir
-    src_fps, joints = source_meta(preset)
-    actions, bounds = load_ground_truth(preset)
-    points = eval_points(preset, bounds, args.horizon, src_fps)
-    # On a multi-task preset each point carries its own episode's instruction.
-    point_tasks = tasks_for_points(preset, bounds, points)
+    sweep = args.sweep.expanduser()
+    if not sweep.is_dir():
+        raise SystemExit(f"no such sweep dir: {sweep}")
+
+    runs = args.runs or sorted(d.name for d in sweep.iterdir() if (d / "checkpoints").is_dir())
+    if not runs:
+        raise SystemExit(f"no run with a checkpoints/ dir under {sweep}")
+
+    # One RunSpec per run, taken from its newest checkpoint, then checked for agreement.
+    # A curve that blended runs with different held-out sets would be comparing lines
+    # drawn on different data.
+    specs = {}
+    for name in runs:
+        ck_dir = sweep / name / "checkpoints"
+        steps = sorted(d.name for d in ck_dir.iterdir() if d.name.isdigit()) if ck_dir.is_dir() else []
+        if steps:
+            specs[name] = resolve_run(ck_dir / steps[-1])
+    if not specs:
+        raise SystemExit(f"no numbered checkpoint under {sweep}")
+    spec = agree(specs)
+
+    src_fps, joints = source_meta(spec)
+    actions, bounds = load_ground_truth(spec)
+    val_episodes = select_episodes(spec, args.only_task)
+    points = eval_points(bounds, val_episodes, args.horizon, src_fps, args.stride)
+    if not points:
+        raise SystemExit(f"no eval point survives a {args.horizon}s horizon in {val_episodes}")
+    point_tasks = tasks_for_points(spec, bounds, val_episodes, points)
     n = int(round(args.horizon * src_fps))
     gt = np.stack([actions[p : p + n] for p in points])
     act_dim = gt.shape[-1]
 
-    runs = args.runs or sorted(d.name for d in args.out_dir.iterdir() if (d / "checkpoints").is_dir())
-    src_ds = LeRobotDataset(repo_id="local/src", root=preset.src, video_backend="torchcodec")
+    src_ds = LeRobotDataset(repo_id="local/src", root=spec.src, video_backend="torchcodec")
 
     # Zero-action reference line: anything above it has not learned the task.
     baseline = score(np.zeros((len(points), n, act_dim), np.float32), gt, joints, src_fps)["disp_err"]
     draws_note = f", {args.n_draws} noise draws averaged" if args.n_draws > 1 else ""
-    print(f"{len(points)} eval points, horizon {args.horizon}s{draws_note}, "
-          f"zero-action baseline disp_err={baseline:.4f}\n")
+    slice_note = f", only {args.only_task!r}" if args.only_task else ""
+    print(f"{len(points)} eval points from {len(val_episodes)} held-out episodes{slice_note}, "
+          f"horizon {args.horizon}s{draws_note}, zero-action baseline disp_err={baseline:.4f}\n")
 
     curves = {}
     for name in runs:
-        ck_dir = args.out_dir / name / "checkpoints"
+        ck_dir = sweep / name / "checkpoints"
         steps = sorted(d.name for d in ck_dir.iterdir() if d.name.isdigit()) if ck_dir.is_dir() else []
         if not steps:
             continue
@@ -96,7 +126,7 @@ def main():
             if not (ckpt / "model.safetensors").exists():
                 continue
             chunk, fps, cams, ptype = predict_chunks(
-                ckpt, src_ds, points, args.batch_size, args.device, preset, src_fps, point_tasks,
+                ckpt, src_ds, points, args.batch_size, args.device, spec, src_fps, point_tasks,
                 n_draws=args.n_draws)
             if chunk.shape[1] / fps + 1e-6 < args.horizon:
                 continue
@@ -107,7 +137,7 @@ def main():
             print(f"  [{name}] step {int(s):>6}  disp_err={sc['disp_err']:.4f}  mae={sc['mae']:.4f}  move={sc['move_ratio']:.2f}", flush=True)
 
     if not curves:
-        raise SystemExit(f"no checkpoints found under {args.out_dir}")
+        raise SystemExit(f"no checkpoints found under {sweep}")
 
     print(f"\n{'=' * 72}\nbest checkpoint per run (held-out disp_err, horizon {args.horizon}s)")
     print(f"{'run':<8}{'best step':>11}{'disp_err':>11}{'final step':>12}{'final':>10}{'overfit?':>10}")
@@ -176,9 +206,9 @@ def main():
     ax.legend(frameon=False, labelcolor=TEXT_SECONDARY)
     fig.tight_layout()
 
-    png = args.out_dir / "curve.png"
+    png = sweep / "curve.png"
     fig.savefig(png, dpi=140, facecolor=SURFACE)
-    (args.out_dir / "curve.json").write_text(json.dumps({"baseline": baseline, "curves": curves}, indent=2))
+    (sweep / "curve.json").write_text(json.dumps({"baseline": baseline, "curves": curves}, indent=2))
     print(f"\nwrote {png}")
 
 
