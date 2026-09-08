@@ -13,25 +13,19 @@ from pathlib import Path
 from vla_common.paths import dataset, playbook
 
 ROOT = playbook("xvla")
-SMOL = playbook("smolvla")
 EXPECTED_REVISION = "cdb7964e4fe842935d671bfab5a5ebe00a96648c"
 EXPECTED_WEIGHT_BYTES = 3_519_073_692
 
-RUNS = {
-    "ir": (SMOL / "datasets/masi_digging_ir", ("observation.images.cam1",)),
-    "both": (dataset("masi_digging"),
-             ("observation.images.cam1", "observation.images.cam2")),
-    "clean_ir": (SMOL / "datasets/masi_digging_clean_ir", ("observation.images.cam1",)),
-    "clean_both": (SMOL / "datasets/masi_digging_clean",
-                   ("observation.images.cam1", "observation.images.cam2")),
-    "dry_ir": (SMOL / "datasets/masi_digging_dry_ir", ("observation.images.cam1",)),
-    "dry2_ir": (SMOL / "datasets/masi_digging_dry2_ir", ("observation.images.cam1",)),
-}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run", choices=RUNS, default="clean_ir")
+    # No run->dataset table here any more. It was the fourth copy of the same mapping
+    # and drifted from the others silently; the dataset is now named the way
+    # run_training.sh names it, and the view is resolved by the same code.
+    parser.add_argument("--dataset", default=None,
+                        help="recording to check the contract of (default: env checks only)")
+    parser.add_argument("--cameras", default=None, help="e.g. cam1 or cam1,cam2")
     parser.add_argument("--checkpoint", type=Path, default=ROOT / "models/xvla-base-excavator")
     parser.add_argument("--steps", type=int, default=30_000)
     parser.add_argument("--save-freq", type=int, default=5_000)
@@ -88,20 +82,31 @@ def main() -> None:
     else:
         print("warn checkpoint predates REVISION marker; Hub checksum was verified separately")
 
-    dataset_root, cameras = RUNS[args.run]
-    info_path = dataset_root / "meta/info.json"
-    require(info_path.is_file(), f"{args.run} dataset metadata exists at {dataset_root}")
-    info = json.loads(info_path.read_text())
-    features = info["features"]
-    require(shape(features, "observation.state") == (3,), "state contract is 3-D")
-    require(shape(features, "action") == (4,), "action contract is 4-D")
-    for camera in cameras:
-        require(camera in features and features[camera]["dtype"] == "video",
-                f"camera contract {camera} is video")
-    n_episodes = int(info["total_episodes"])
-    val_episodes = list(range(5, n_episodes, 10))
-    require(n_episodes > len(val_episodes),
-            f"dataset has {n_episodes} episodes ({n_episodes - len(val_episodes)} train by default)")
+    if args.dataset:
+        from vla_common.dataset import split as split_mod
+        from vla_common.dataset import view as view_mod
+
+        src = Path(args.dataset)
+        if not src.is_dir():
+            src = dataset(args.dataset)
+        cams = args.cameras.split(",") if args.cameras else None
+        # Resolve exactly as run_training.sh will, so a green preflight means the run
+        # will see the same dataset root -- including a rebuilt view if the source grew.
+        dataset_root = view_mod.resolve(src, cams)
+        info_path = dataset_root / "meta/info.json"
+        require(info_path.is_file(), f"dataset metadata exists at {dataset_root}")
+        info = json.loads(info_path.read_text())
+        features = info["features"]
+        require(shape(features, "observation.state") == (3,), "state contract is 3-D")
+        require(shape(features, "action") == (4,), "action contract is 4-D")
+        for camera in view_mod.source_cameras(dataset_root):
+            require(features[camera]["dtype"] == "video",
+                    f"camera contract {camera} is video")
+        n_eps, val_eps, train_eps = split_mod.split(dataset_root)
+        require(len(train_eps) > 0,
+                f"dataset has {n_eps} episodes ({len(train_eps)} train, {len(val_eps)} held out)")
+    else:
+        print("skip dataset contract (pass --dataset NAME to check one)")
 
     free = shutil.disk_usage(ROOT).free
     # The measured FP32 probe checkpoint was 6.01 GB. BF16 halves model and Adam state,
@@ -113,7 +118,7 @@ def main() -> None:
             f"disk headroom: {free / 1024**3:.1f} GiB free, "
             f"conservative checkpoint budget {estimate / 1024**3:.1f} GiB")
 
-    print(f"\nREADY: {args.run}, {args.steps} steps, save every {args.save_freq}")
+    print(f"\nREADY: {args.dataset or 'env only'}, {args.steps} steps, save every {args.save_freq}")
 
 
 if __name__ == "__main__":

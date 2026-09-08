@@ -11,7 +11,6 @@ ROOT=$(cd "$HERE/.." && pwd)
 SMOL=$(cd "$ROOT/../smolvla" && pwd)
 VENV_ROOT=$VENV_LEROBOT051
 VENV=$VENV_ROOT/bin
-RUN=${1:-clean_ir}
 
 if [ ! -x "$VENV/python" ]; then
     echo "creating the shared, comparison-pinned LeRobot environment at $VENV_ROOT"
@@ -29,7 +28,7 @@ if [ ! -f "$ROOT/models/xvla-base-excavator/model.safetensors" ]; then
     "$VENV/python" "$HERE/prepare_checkpoint.py"
 fi
 
-"$VENV/python" "$HERE/preflight.py" --run "$RUN"
+"$VENV/python" "$HERE/preflight.py" "$@"
 echo
 echo "X-VLA fine-tuning stack is ready. Smoke test:"
 echo "  $VLA_ONNX/run_training.sh --model xvla --dataset <recording> --cameras cam1 --smoke"
