@@ -257,8 +257,13 @@ case "$MODEL" in
         CKPT=${INIT_FROM:-$PLAYBOOK/models/xvla-base-excavator}
         [ -f "$CKPT/model.safetensors" ] || die "no prepared X-VLA checkpoint at $CKPT
    Run xvla/excavator/fetch_checkpoint.sh, then prepare_checkpoint.py."
+        # STATE=MEAN_STD is not optional: xvla-base ships STATE=IDENTITY and X-VLA does
+        # not normalise proprio itself, so without it the joint angles go in as raw
+        # degrees. The restructure dropped this flag; every X-VLA run before it (the
+        # fullft-17500 bundle included) trained with it.
         MODEL_FLAGS=(--policy.path="$CKPT"
                      --policy.action_mode=auto
+                     --policy.normalization_mapping='{"VISUAL":"IDENTITY","STATE":"MEAN_STD","ACTION":"MEAN_STD"}'
                      --policy.dtype=bfloat16) ;;
     evo1)
         BASE=$PLAYBOOK/models/InternVL3-1B-hf
@@ -300,6 +305,12 @@ CMD=("$VENV/bin/lerobot-train"
      --save_freq="$SAVE_FREQ"
      --eval_freq=0)
 [ -n "$TRAIN_EPS" ] && CMD+=(--dataset.episodes="$TRAIN_EPS")
+# Both policies default scheduler_decay_steps to 30000 and the scheduler only scales it
+# DOWN to fit a shorter run. Past 30000 the LR sits at its floor for every extra step, so
+# stretch the cosine to the run instead.
+case "$MODEL" in smolvla|xvla)
+    [ "$STEPS" -gt 30000 ] && CMD+=(--policy.scheduler_decay_steps="$STEPS") ;;
+esac
 [ "$SMOKE" = 1 ] && CMD+=(--save_checkpoint=false)
 CMD+=("${MODEL_FLAGS[@]}" "${MODE_FLAGS[@]}")
 
