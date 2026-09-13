@@ -97,7 +97,7 @@ ssh "$HOST" "mkdir -p $DEST"
 rsync -avh --partial --progress \
       --exclude 'trt_cache/' --exclude 'ctx/' \
       --exclude '*.engine' --exclude '*.plan' --exclude '*.profile' \
-      --exclude '__pycache__/' --exclude '_meta_*.json' \
+      --exclude '__pycache__/' --exclude '_meta_*.json' --exclude 'parity_reference.npz' \
       "$BUNDLE/" "$HOST:$DEST/"
 
 echo

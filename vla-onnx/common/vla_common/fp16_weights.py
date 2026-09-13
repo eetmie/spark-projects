@@ -50,8 +50,22 @@ converted = float16.convert_float_to_float16(
     op_block_list=blocked,
 )
 dst.parent.mkdir(parents=True, exist_ok=True)
-OnnxModel(converted).save_model_to_file(str(dst), use_external_data_format=True)
+# save_model_to_file topologically sorts first, and that is load-bearing: keep_io_types
+# appends its input Casts at the END of the node list, so a bare onnx.save writes a graph
+# that consumes tensors before producing them. Inline whenever protobuf allows (< 2 GB),
+# which is every split graph so far and the layout the deployed bundles have.
+try:
+    inline = converted.ByteSize() < 2_000_000_000
+except Exception:
+    inline = False
+OnnxModel(converted).save_model_to_file(str(dst), use_external_data_format=not inline)
 '''
+
+
+def _onnx_mb(path: Path) -> float:
+    """A graph's footprint, counting its external-data file if it has one."""
+    ext = path.with_name(path.name + ".data")
+    return (path.stat().st_size + (ext.stat().st_size if ext.is_file() else 0)) / 1e6
 
 
 def convert_bundle(
@@ -112,7 +126,8 @@ def convert_bundle(
                         f"fp16 conversion failed for {name}:\n" + "\n".join(tail)
                     )
                 mode = "mixed FP16"
-            src_mb, dst_mb = src.stat().st_size / 1e6, dst.stat().st_size / 1e6
+            src_mb, dst_mb = _onnx_mb(src), _onnx_mb(dst)
+            graph["size_mb"] = round(dst_mb, 1)
             total_src, total_dst = total_src + src_mb, total_dst + dst_mb
             if verbose:
                 print(f"  {name:18s} {src_mb:6.0f} MB -> {dst_mb:6.0f} MB  {mode}")

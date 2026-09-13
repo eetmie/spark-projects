@@ -106,7 +106,15 @@ rc=$?; [ $rc -eq 0 ] || die "export failed (rc=$rc), stopping before parity."
 
 if [ -n "$PARITY" ] && [ -f "$PLAYBOOK/$PARITY" ]; then
     echo "=== parity vs the torch checkpoint  $(date) ==="
-    "$PY" "$PLAYBOOK/$PARITY" --split-dir "$DEST" "$CKPT_FLAG" "$CKPT" 2>&1 | tee "$DEST/PARITY.txt"
+    PARITY_ARGS=(--split-dir "$DEST" "$CKPT_FLAG" "$CKPT")
+    # X-VLA's parity caches its PyTorch reference in ONE shared npz by default and refuses
+    # when that cache was emitted for a different bundle -- correctly, but it used to scroll
+    # past inside `| tee` and the export still "succeeded" unverified. Keep the reference
+    # with the bundle, and let a refusal or a FAIL stop the script.
+    [ "$MODEL" = xvla ] && PARITY_ARGS+=(--reference "$DEST/parity_reference.npz")
+    "$PY" "$PLAYBOOK/$PARITY" "${PARITY_ARGS[@]}" 2>&1 | tee "$DEST/PARITY.txt"
+    rc=${PIPESTATUS[0]}
+    [ "$rc" -eq 0 ] || die "parity did not pass (rc=$rc), see $DEST/PARITY.txt"
 else
     echo "!! no parity script for $MODEL -- bundle is UNVERIFIED against torch" >&2
 fi

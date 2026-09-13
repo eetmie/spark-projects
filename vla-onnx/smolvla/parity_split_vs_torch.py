@@ -10,6 +10,7 @@ what the excav_E17500 PARITY.txt recorded.
       --model-id outputs/digging/ir/checkpoints/020000/pretrained_model
 """
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -78,6 +79,9 @@ def main():
         print(f"  {'PASS' if passed else 'FAIL'}")
 
     print(f"\nRESULT: {'PASS - split matches the checkpoint, Orin-ready' if ok else 'FAIL - investigate'}")
+    # Exit status is the contract run_export.sh gates on; printing FAIL alone let a failed
+    # split ship.
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

@@ -625,9 +625,9 @@ def main() -> None:
     ap.add_argument("--views", "--valid-views", type=int, default=None, dest="valid_views",
                     help="how many camera views the bundle is sized for. (--valid-views is "
                          "the old name and still works.) Sets the static batch of the vision "
-                         "engine; defaults to the checkpoint's num_image_views. Set it to the "
-                         "number of REAL cameras -- padded views are zeroed by the runtime and "
-                         "never need a forward pass.")
+                         "engine; defaults to the checkpoint's REAL camera count (its VISUAL "
+                         "input_features), falling back to num_image_views when those are empty. "
+                         "Padded views are zeroed by the runtime and never need a forward pass.")
     ap.add_argument("--lang-len", type=int, default=None,
                     help="language tokens; defaults to the saved policy preprocessor")
     ap.add_argument("--fps", type=int, default=None,
@@ -684,7 +684,14 @@ def main() -> None:
     checkpoint_tree_sha = tree_sha256(args.checkpoint)
 
     if args.valid_views is None:
-        args.valid_views = cfg.get("num_image_views") or 3
+        # The camera count is the checkpoint's VISUAL input_features, NOT num_image_views:
+        # that is the padded slot count (3 in xvla-base and in every finetune of it). The
+        # old default baked 3 views into a 1-camera excavator bundle, which the runtime
+        # refuses ("bundle requires exactly 3 camera views"). xvla-base itself declares 3
+        # VISUAL features, so the base export is unchanged.
+        cams = [k for k, v in (cfg.get("input_features") or {}).items()
+                if v.get("type") == "VISUAL"]
+        args.valid_views = len(cams) or cfg.get("num_image_views") or 3
     num_views = int(cfg.get("num_image_views") or 0)
     if args.valid_views <= 0 or args.valid_views > num_views:
         sys.exit(
@@ -764,7 +771,10 @@ def main() -> None:
     for g in graphs:
         f = args.out_dir / str(g.get("file") or "")
         if f.is_file():
-            g["size_mb"] = round(f.stat().st_size / 1e6, 1)
+            # plus external data, if a converter wrote any: the .onnx alone is then a few kB
+            ext = f.with_name(f.name + ".data")
+            g["size_mb"] = round((f.stat().st_size
+                                  + (ext.stat().st_size if ext.is_file() else 0)) / 1e6, 1)
     denoise_meta = next(
         (doc for path, doc in zip(metas, meta_docs, strict=True)
          if path.stem == "_meta_denoise"), {})
