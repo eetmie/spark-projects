@@ -160,7 +160,9 @@ done
 # and collapsing them breaks at startup with an error that names nothing relevant.
 case "$MODEL" in
     smolvla) VENV=$VENV_LEROBOT051; PLAYBOOK=$VLA_ONNX/smolvla; : "${MODE:=expert}"; : "${LR:=1e-4}" ;;
-    xvla)    VENV=$VENV_LEROBOT051; PLAYBOOK=$VLA_ONNX/xvla;    : "${MODE:=frozen}"; : "${LR:=1e-4}" ;;
+    # xvla defaults to full: frozen encoders scored 14-22% worse held-out on two recordings
+    # and drove the excavator badly (2026-09-14); full is also X-VLA's own recipe.
+    xvla)    VENV=$VENV_LEROBOT051; PLAYBOOK=$VLA_ONNX/xvla;    : "${MODE:=full}"; : "${LR:=1e-4}" ;;
     evo1)    VENV=$VENV_LEROBOT061; PLAYBOOK=$VLA_ONNX/evo1;    : "${MODE:=expert}"; : "${LR:=1e-5}" ;;
     *) die "unknown --model $MODEL (smolvla | xvla | evo1)" ;;
 esac
@@ -229,8 +231,9 @@ case "$MODEL:$MODE" in
     xvla:expert)
         die "--train-mode expert does not exist for xvla.
    X-VLA has no action-head-only mode: freezing both encoders still trains the full
-   policy transformer and the soft prompts. Use --train-mode frozen (311M trainable)
-   for the nearest equivalent, or --train-mode full (879M)." ;;
+   policy transformer and the soft prompts. Use --train-mode full (879M, the default,
+   and what drives the excavator), or --train-mode frozen (311M) for the nearest
+   equivalent -- which scored 14-22% worse and drove badly." ;;
     xvla:lora|evo1:lora)
         die "--train-mode lora is only wired for smolvla.
    LoRA needs target modules and only SmolVLA defines _get_default_peft_targets.

@@ -50,6 +50,10 @@ it is rather than what someone happened to type.
 | `frozen` | = `expert` | both encoders frozen (311 M) | = `stage1` |
 | `full` | nothing frozen (~450 M) | nothing frozen (879 M) | `training_stage=stage2` |
 | `lora` | `--peft.method_type=LORA` | *refused* | *refused* |
+| **default** | `expert` | `full` | `expert` |
+
+X-VLA defaults to `full`. `frozen` scored 14-22% worse held-out on two excavator
+recordings, and the frozen new-IMU bundle drove the machine badly where `full` drove well.
 
 A mode a model does not have is an error naming the modes it does have, never a silent
 fallback. `--model evo1` currently refuses outright: it has no trained excavator path, and
