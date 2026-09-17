@@ -156,6 +156,21 @@ fingerprint and compares: a grown source is rebuilt automatically, a *shrunk* on
 refused, because dropping episodes renumbers the survivors and makes every split derived
 from an older checkpoint a lie.
 
+Proprio channels have the same problem and a different answer. `observation.state` goes to
+the policy whole, so a sensor that should not be an input has to leave the dataset:
+
+```bash
+python -m vla_common.dataset.state_variant --src <rec> --dst <rec>_nogyro --drop slew
+```
+
+That produces a **recording**, not a view — it rewrites `data/` and belongs next to its
+source under `$VLA_DATASETS`. Slew is the standing case: its yaw has no tare, so the
+number means something different in each session, and dropping it is what makes the swing
+camera-derived. The masi recordings already ship `[lift, tilt, scoop]` for that reason;
+`komatsu_flipcone_nogyro` is the komatsu set brought to the same contract. `action` and
+`feedback.*` keep every channel — the machine is still commanded to slew, and `feedback.*`
+never reaches the policy.
+
 ## Two environments, and why they cannot be one
 
 | env | lerobot | torch | used by |

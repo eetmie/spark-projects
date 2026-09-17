@@ -9,9 +9,10 @@ pipeline environments pin different versions.
     split.py           derive the train / held-out episode split from meta/info.json
     view.py            resolve (and freshen) a camera-subset view for a training run
     camera_variant.py  build a camera-subset view without copying video
+    state_variant.py   drop channels from observation.state (a sensor the policy must not see)
     retask.py          rename the instruction string, in place
     trim_variant.py    trim dead air off every episode
 
 `split.py` and `view.py` are stdlib-only and are what `run_training.sh` calls; the other
-three need pandas and are the tools that actually rewrite a dataset.
+four need pandas and are the tools that actually rewrite a dataset.
 """
