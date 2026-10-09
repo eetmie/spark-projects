@@ -1,4 +1,4 @@
-# GR00T N1.6 split export
+# GR00T N1.6 / N1.7 split export
 
 `nvidia/GR00T-N1.6-3B` cut into 26 graphs for the 8 GB Orin Nano Super, run there on the
 TensorRT runtime alone. Benchmarked through
@@ -38,3 +38,46 @@ once in FP16, and all contexts share one 17 MB scratch buffer.
   proxy for this class of bug; `work/`-style per-graph bisection finds the stage.
 - SigLIP2's vendored eager attention ignores per-image `seq_len_list` (only flash-attn
   honours it); the reference patches it to per-image attention.
+
+## GR00T N1.7
+
+`nvidia/GR00T-N1.7-3B` (backbone Cosmos-Reason2-2B = Qwen3-VL) cut into 26 graphs the same
+way: vision x4 (Qwen3-VL ViT; DeepStack mergers ride in their layer's chunk), llm x8,
+cond x2 (vlln + the new 4-layer VL self-attention + state encoder), time, dit x11.
+~2.51 B deployed params. Own venv (transformers 4.57.3) and source checkout.
+
+```bash
+./setup17.sh                                  # .venv-groot17 + Isaac-GR00T n1.7-release source
+.venv-groot17/bin/python reference17.py --out work/ref17.npz     # stock PyTorch FP32 fixture
+.venv-groot17/bin/python check_split17.py --ref work/ref17.npz
+.venv-groot17/bin/python export_split_onnx17.py --ref work/ref17.npz --out work/groot-n17-split
+.venv-groot17/bin/python parity17.py --bundle work/groot-n17-split --ref work/ref17.npz
+```
+
+Tokenizer/processor files come from `nvidia/Cosmos-Reason2-2B`, a gated repo; until access
+is granted `--vlm-files Qwen/Qwen3-VL-2B-Instruct` builds the same architecture (all
+checkpoint keys load) but the chat template is not verified to be Cosmos's.
+
+Contract: embodiment `xdof_relative_eef_relative_joint` (3 cameras x 2 frames: now and 30
+frames earlier; robocasa is not an N1.7 pretrained embodiment), 256x256 per image (the
+letterbox/crop eval transform already lands on a multiple of 32, so Qwen's resize is a
+no-op), 64 tokens per image, prompt 412 tokens padded to 448, chunk 40 x 132, 4 steps.
+
+What differs from N1.6, each found by bisecting against stock:
+
+- **backbone_features is pre-norm.** Stock takes `hidden_states[-1]` of
+  Qwen3VLForConditionalGeneration, which (transformers 4.57.3) is the last decoder layer's
+  output BEFORE the final RMSNorm, ~1.5e4 massive activation included. vlln (LayerNorm,
+  FP32) consumes it directly.
+- **`get_action` overwrites `backbone_features` in place** with the post-vlln/VL-self-attn
+  tensor, so the reference's saved features are the conditioning, not the LLM output.
+- **DeepStack:** ViT layers 5/11/17 each feed a merger whose output is added to the
+  hidden state after LLM layers 0/1/2 at image positions. The host scatters them into
+  zero [1,S,2048] buffers; the graphs just add.
+- **VL self-attention** has no mask in stock (batch 1, no pads); the split passes a key
+  bias that hides the right-padding, which keeps real tokens exact.
+- The ViT's eager path already attends per image (unlike N1.6's SigLIP2 patch), and
+  each image is independent, so a frame's vision output can be cached across calls.
+
+Measured on the Spark: split vs stock FP32 action max 1.4e-6; ORT CPU mixed FP16 vs
+stock: cos 0.9999999, full chunk max 0.041 % of range.
