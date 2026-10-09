@@ -54,9 +54,10 @@ cond x2 (vlln + the new 4-layer VL self-attention + state encoder), time, dit x1
 .venv-groot17/bin/python parity17.py --bundle work/groot-n17-split --ref work/ref17.npz
 ```
 
-Tokenizer/processor files come from `nvidia/Cosmos-Reason2-2B`, a gated repo; until access
-is granted `--vlm-files Qwen/Qwen3-VL-2B-Instruct` builds the same architecture (all
-checkpoint keys load) but the chat template is not verified to be Cosmos's.
+Tokenizer/processor files come from `nvidia/Cosmos-Reason2-2B`, a gated repo (accept its
+terms on huggingface.co). Its config, tokenizer, chat template and processor files are
+byte-identical to `Qwen/Qwen3-VL-2B-Instruct`'s (checked 2026-10-09); the published bundle
+was exported from the Cosmos files.
 
 Contract: embodiment `xdof_relative_eef_relative_joint` (3 cameras x 2 frames: now and 30
 frames earlier; robocasa is not an N1.7 pretrained embodiment), 256x256 per image (the
