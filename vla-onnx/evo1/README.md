@@ -157,6 +157,12 @@ training because they affect prompt positions and the final ONNX sequence shape.
 .venv/bin/python fp16_weights.py
 ```
 
+For a strongly typed TensorRT build, jetson-orin-nano-vla instead runs
+`python -m vla_common.fp16_mixed ... --half-io 'key_mask|(key|value)_[0-9]+'`, which
+keeps the per-observation key/value cache FP16 between `action_context` and
+`action_step` (they were cast back to FP16 on each of 32 steps: −6.4 ms, −120 MB on the
+Orin); `vla_common.half_boundary` does the same to an existing bundle.
+
 The result is a checksummed 1.827 GB bundle: ten TensorRT graphs plus one CPU token
 embedding graph. Run it with [jetson-orin-nano-vla](https://github.com/eetmie/jetson-orin-nano-vla) (`bench ort-split --model evo1-bootstrap`)
 to the Jetson, build each engine in an isolated subprocess, and run the included fixture.

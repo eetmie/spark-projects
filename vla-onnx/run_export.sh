@@ -25,7 +25,7 @@ source "$HERE/paths.sh"
 
 die() { echo "!! $*" >&2; exit 2; }
 
-MODEL="" RUN="" STEP=best DEST="" VIEWS=""
+MODEL="" RUN="" STEP=best DEST="" VIEWS="" HOIST=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --model) MODEL=$2; shift 2 ;;
@@ -33,6 +33,7 @@ while [ $# -gt 0 ]; do
         --step)  STEP=$2; shift 2 ;;
         --dest)  DEST=$2; shift 2 ;;
         --views) VIEWS=$2; shift 2 ;;
+        --hoist-cross-kv) HOIST=1; shift ;;
         -h|--help)
             sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
             cat <<'USAGE'
@@ -42,6 +43,10 @@ while [ $# -gt 0 ]; do
   --step S     best (default, from curve.json) | last | a step number
   --dest DIR   bundle destination (default: $VLA_DATASETS/<model>-<sweep>-<run>-<step>)
   --views N    how many camera views the bundle is sized for (default: the checkpoint's)
+  --hoist-cross-kv  SmolVLA: prefill emits the cross-attention layers' expert K/V once per
+               observation instead of decode recomputing them every denoise step (same
+               arithmetic; -2 ms on the Orin). Runtimes that pass prefill outputs to
+               decode inputs by name, as kaivuriprokkis does, need no change.
 USAGE
             exit 0 ;;
         *) die "unknown flag: $1" ;;
@@ -101,6 +106,10 @@ fi
 echo "=== export $MODEL step $STEP -> $DEST  $(date) ==="
 EXPORT_ARGS=("$CKPT_FLAG" "$CKPT" --out-dir "$DEST")
 [ -n "$VIEWS" ] && EXPORT_ARGS+=(--views "$VIEWS")
+if [ -n "$HOIST" ]; then
+    [ "$MODEL" = smolvla ] || die "--hoist-cross-kv is a SmolVLA export option"
+    EXPORT_ARGS+=(--hoist-cross-kv)
+fi
 "$PY" "$PLAYBOOK/export_split_onnx.py" "${EXPORT_ARGS[@]}"
 rc=$?; [ $rc -eq 0 ] || die "export failed (rc=$rc), stopping before parity."
 

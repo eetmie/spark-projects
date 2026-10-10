@@ -109,11 +109,30 @@ step on this project's own history (kaivuri peaked at 20000 of 30000, the first 
 Note that X-VLA *exports* in `.venv-lerobot061` while it *trains* in `.venv-lerobot051`;
 `run_export.sh` picks the right one.
 
+SmolVLA exports write LeRobot's RoPE by concatenation and the patch embedding as
+patchify + MatMul: the same arithmetic as the slice-assign RoPE and the stride-16 conv
+(split parity unchanged, max 1.5e-6 against torch), but TensorRT fuses them instead of
+running unfused scatters and a slow conv kernel (−7.5 ms and −0.8 ms per inference on
+the Orin Nano). `--hoist-cross-kv` additionally has prefill emit the cross-attention
+layers' expert K/V once per observation instead of decode re-projecting the fixed
+prefix every step (−2 ms); a runtime that feeds prefill outputs to decode inputs by
+name, as kaivuriprokkis does, runs it unchanged.
+
+Bundle tools in `vla_common` (from the Orin optimization work in
+[jetson-orin-nano-vla](https://github.com/eetmie/jetson-orin-nano-vla/blob/main/docs/07-optimization-playbook.md)):
+
+| | |
+|---|---|
+| `python -m vla_common.fp16_mixed --bundle B --graphs ... [--half-io REGEX]` | mixed FP16 for a strongly typed TensorRT build, every RMSNorm found by shape and kept FP32; `--half-io` keeps chosen engine-boundary tensors FP16 |
+| `python -m vla_common.boundary_report B` | FP32 tensors crossing engines that round-trip FP16→FP32→FP16 and would be exact in FP16 |
+| `python -m vla_common.half_boundary --bundle B --names REGEX` | switches those tensors to FP16 in an existing bundle; refuses anything not exact |
+| `python -m vla_common.fp32_accumulate --bundle B --graphs ...` | every FP16 MatMul as Cast(FP32) → MatMul → Cast(FP16), which TensorRT runs FP32-accumulating (on the Orin: +1–3 % latency, 30–45 % lower action error) |
+
 ## What is shared, and what is deliberately not
 
 [`common/`](common/) (`vla_common`) holds what all three do *identically*: hash a bundle,
 validate a traced graph, record provenance, convert weights to mixed FP16, read a
-safetensors header, reshape a LeRobot dataset.
+safetensors header, reshape a LeRobot dataset, and the bundle tools above.
 
 What is **not** shared is how a model gets cut into graphs. `_build_wrappers()` is ~200
 lines in each playbook and about 5% similar between them, because the cut follows the
