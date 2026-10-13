@@ -5,8 +5,6 @@ Each subdirectory is a self-contained playbook: code, Dockerfiles, scripts, and 
 Large artifacts (checkpoints, datasets, ONNX/engines, venvs) are **gitignored** — these
 repos hold the *recipe*, not the data.
 
-> Environment across all playbooks: NVIDIA GB10, Ubuntu 24.04, aarch64, CUDA 13, driver 580.
-
 ## Playbooks
 
 ### [`pi05-spark-inference/`](pi05-spark-inference/) — π0.5 VLA inference on GB10
@@ -22,34 +20,15 @@ Full pipeline: JAX→PyTorch convert → ONNX (ModelOpt) → trtexec engine → 
 See `pi05-spark-inference/notes/findings.md` and `RUNBOOK.md`.
 
 ### [`vla-onnx/`](vla-onnx/) — LeRobot VLA → split ONNX → Orin Nano
-One pipeline, three models: **SmolVLA 450 M**, **X-VLA 0.9 B**, **EVO1 775 M**. Fine-tune on
-GB10, cut into split ONNX graphs the 8 GB Orin can actually build engines for. Verify against
-PyTorch baseline.
+Old project, go see jetson-orin-nano-vla
 
-Two environments on purpose — lerobot 0.5.1/torch 2.12 for the SmolVLA↔X-VLA comparison,
-0.6.1/torch 2.11 for EVO1 and the X-VLA export. They are mutually exclusive pins.
-See [`vla-onnx/README.md`](vla-onnx/README.md).
 
 ### [`scene-reconstruction/`](scene-reconstruction/) — video → Gaussian splat → Isaac Sim
-(basically deprecated since Spirula Studio exists. I only use the usd_export from here!)
-Smartphone video -> COLMAP -> 3DGRUT raw Gaussian splat -> SuperSplat cleanup/compression -> Isaac Sim NuRec USDZ on DGX Spark. See `scene-reconstruction/README.md`.
+Old project, just use Spirula studio (not sponsored). Just add vkQueueWaitIdle() after the normal timeline wait in Stream.cpp (spirula/spirula-studio/src/nn/vk/Stream.cpp:313). Enabled by SS_NN_QUEUE_IDLE_SYNC=1
 
-## Where the deploy side lives
+Otherwise depth generation freezes.
 
-This repo is the **Spark side**: fine-tune, export, and validate the export. It stops at a
-parity-checked ONNX bundle.
-
-| repo | owns |
-|---|---|
-| **spark-projects** (here) | fine-tuning, ONNX export, export parity, bundles |
-| [**jetson-orin-nano-vla**](https://github.com/eetmie/jetson-orin-nano-vla) | does a **base** model fit on the 8 GB Orin, and what it costs — board prep, TRT build probes, the benchmark |
-| [**kaivuriprokkis**](https://github.com/eetmie/kaivuriprokkis) | the robot. Fine-tuned runtime, camera, control and generally a very messy dev repo |
-
-TensorRT engines are built on-device and never copied; the ONNX bundle is the portable
-artifact. Bundles ship with `ship_bundle.sh <dir> orin <name>` and land in `~/bundles/`.
 
 ## Notes
 - `pi05-spark-inference/phase2/openpi_on_thor/` contains scripts adapted from NVIDIA /
   Jetson AI Lab's "OpenPi π0.5 on Jetson Thor" tutorial, kept here for reproducibility.
-- Each playbook documents the exact aarch64/Blackwell dependency gotchas it hit — that's
-  the main value, since stock install instructions rarely work cleanly on GB10.
