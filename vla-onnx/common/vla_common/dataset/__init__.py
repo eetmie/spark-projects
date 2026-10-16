@@ -12,7 +12,9 @@ pipeline environments pin different versions.
     state_variant.py   drop channels from observation.state (a sensor the policy must not see)
     retask.py          rename the instruction string, in place
     trim_variant.py    trim dead air off every episode
+    to_v21.py          write a lossless, verified LeRobot v2.1 copy (for openpi and GR00T)
 
 `split.py` and `view.py` are stdlib-only and are what `run_training.sh` calls; the other
-four need pandas and are the tools that actually rewrite a dataset.
+four need pandas and are the tools that actually rewrite a dataset. `to_v21` needs
+pyarrow and PyAV (`av`) instead; a lerobot 0.6.1 environment has both.
 """

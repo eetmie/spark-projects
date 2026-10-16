@@ -12,7 +12,7 @@ requires-python = ">=3.12"
 dependencies = []
 
 [project.optional-dependencies]
-dataset = ["pandas", "numpy"]   # only vla_common.dataset needs these
+dataset = ["pandas", "numpy", "pyarrow", "av"]   # only vla_common.dataset needs these
 
 [build-system]
 requires = ["setuptools>=68"]
