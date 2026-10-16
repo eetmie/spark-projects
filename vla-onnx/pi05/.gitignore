@@ -1,0 +1,5 @@
+third_party/
+datasets/
+checkpoints/
+assets/
+runs/
