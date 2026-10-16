@@ -20,6 +20,10 @@ RoPE, 10-step conditioning, fixtures), plus what the per-step state prompt needs
 | `tokenizer` | `{"sep": id("▁"), "neg": id("▁-"), "pieces": {"0".."9": id}, "tail": ids(";\nAction: ")}` |
 | `tasks` | `{task: {"head": ids("<bos>Task: <task>, State:")}}` |
 | `kaivuri` | runtime contract from `kaivuriprokkis/native_stack/notes/PI05_FINETUNE.md` (fps, task order, names, cameras) |
+| `language_residual` | `float32`: pi05_base-derived weights overflow FP16 there. `vision_tail` outputs FP32, `language` (00–16) takes/returns FP32 hidden, the last layer is `language_kv` (K/V only). Prompt rows: `embed_fp16 * sqrt(2048)` rounded to FP16, then FP32. Same layout as jetson-orin-nano-vla's `pi05_lerobot` |
+
+Run on native TensorRT attention (one plan per kind, `build_pi05_cache.py`); the AOT attention
+kernel is LIBERO's 10 rows / 521 prefix only.
 
 ## Per-step prompt
 
