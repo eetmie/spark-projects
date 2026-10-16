@@ -1,0 +1,32 @@
+"""Convert a fine-tuned OpenPI JAX checkpoint to PyTorch, with its TrainConfig registered.
+
+Adapted from jetson-orin-nano-vla export/pi05/convert.py. Run in the pinned container:
+    python convert.py --config_name pi05_excavator --checkpoint_dir <step dir> --output_path <out>
+"""
+from pathlib import Path
+import sys
+
+from paths import register_configs
+
+
+def patch_selector(source):
+    # The pinned converter receives pi05 but selects adaptive norms by path.
+    needle = 'if "pi05" in checkpoint_dir:'
+    if source.count(needle) != 3:
+        raise RuntimeError('Pinned converter normalization selector changed')
+    return source.replace(needle, 'if pi05:')
+
+
+def main():
+    import torch
+    register_configs()
+    # Seed the unused language-output projection for repeatable file contents.
+    torch.manual_seed(0)
+    script = '/opt/openpi/examples/convert_jax_model_to_pytorch.py'
+    sys.argv[0] = script
+    source = patch_selector(Path(script).read_text())
+    exec(compile(source, script, 'exec'), {'__name__': '__main__', '__file__': script})
+
+
+if __name__ == '__main__':
+    main()
