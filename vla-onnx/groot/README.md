@@ -82,3 +82,9 @@ What differs from N1.6, each found by bisecting against stock:
 
 Measured on the Spark: split vs stock FP32 action max 1.4e-6; ORT CPU mixed FP16 vs
 stock: cos 0.9999999, full chunk max 0.041 % of range.
+
+## Excavator fine-tune
+
+`excavator/`: NVIDIA's N1.7 trainer on the Spark with the excavator modality config, a
+GR00T view of the dataset and optional training-time RTC. See
+[../kaivuriprokkis/RTC_TRAINING.md](../kaivuriprokkis/RTC_TRAINING.md).

@@ -1,9 +1,10 @@
 """Excavator pi0.5 TrainConfigs, registered into OpenPI at runtime (no OpenPI fork).
 
-Dataset: kaivuriprokkis native recorder export, converted to LeRobot v2.1 with
-`vla_common.dataset.to_v21`. Keys: observation.images.{cam1,cam2} (IR, gray repeated
-to 3 channels), observation.state = [lift, tilt, scoop] deg, action = [slew, lift, tilt,
-scoop(, trackL, trackR)], task -> prompt.
+Dataset: `$HF_LEROBOT_HOME/$KAIVURI_DATASET` (default digging_native_640_simple), a LeRobot
+v2.1 set written from the raw native sessions by `vla_common.dataset.from_native` (or the
+board exporter + `vla_common.dataset.to_v21`). Norm stats are per config and dataset.
+Keys: observation.images.{cam1,cam2} (IR, gray repeated to 3 channels), observation.state =
+[lift, tilt, scoop] deg, action = [slew, lift, tilt, scoop(, trackL, trackR)], task -> prompt.
 
 `discrete_state_input=True` (decided 2026-10-16): pi0.5 has no continuous state input,
 so the joint angles reach the model only as quantile-normalized 256-bin integers in the
@@ -13,6 +14,7 @@ contract and must build this prompt per step.
 """
 
 import dataclasses
+import os
 import pathlib
 
 import numpy as np
@@ -26,7 +28,10 @@ from openpi.training import config as _config
 from openpi.training import optimizer as _optimizer
 from openpi.training import weight_loaders
 
+import rtc_model
+
 PI05_BASE = "gs://openpi-assets/checkpoints/pi05_base/params"
+DATASET = os.environ.get("KAIVURI_DATASET", "digging_native_640_simple")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -91,12 +96,12 @@ class ExcavatorDataConfig(_config.DataConfigFactory):
         )
 
 
-CONFIGS = [
-    _config.TrainConfig(
-        name="pi05_excavator",
-        model=pi0_config.Pi0Config(pi05=True, action_horizon=50, discrete_state_input=True),
+def _excavator(name: str, model, **overrides) -> _config.TrainConfig:
+    kw = dict(
+        name=name,
+        model=model,
         data=ExcavatorDataConfig(
-            repo_id="masi_native_test_v21",
+            repo_id=DATASET,
             base_config=_config.DataConfig(prompt_from_task=True),
         ),
         batch_size=32,
@@ -111,6 +116,19 @@ CONFIGS = [
         num_train_steps=30_000,
         keep_period=None,
         wandb_enabled=False,
+    )
+    kw.update(overrides)
+    return _config.TrainConfig(**kw)
+
+
+CONFIGS = [
+    _excavator("pi05_excavator", pi0_config.Pi0Config(pi05=True, action_horizon=50, discrete_state_input=True)),
+    # Training-time RTC (rtc_model.py). Same parameters as pi05_excavator, so it starts from
+    # pi05_base or from a plain excavator checkpoint (--weight-loader.params-path). Its norm
+    # stats live under its own config name: run norm-stats for it once.
+    _excavator(
+        "pi05_excavator_rtc",
+        rtc_model.Pi0RTCConfig(pi05=True, action_horizon=50, discrete_state_input=True, rtc_max_delay=20),
     ),
 ]
 

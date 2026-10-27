@@ -13,8 +13,9 @@ pipeline environments pin different versions.
     retask.py          rename the instruction string, in place
     trim_variant.py    trim dead air off every episode
     to_v21.py          write a lossless, verified LeRobot v2.1 copy (for openpi and GR00T)
+    from_native.py     raw kaivuri native sessions -> simplified LeRobot v2.1 (openpi, GR00T)
 
 `split.py` and `view.py` are stdlib-only and are what `run_training.sh` calls; the other
-four need pandas and are the tools that actually rewrite a dataset. `to_v21` needs
-pyarrow and PyAV (`av`) instead; a lerobot 0.6.1 environment has both.
+four need pandas and are the tools that actually rewrite a dataset. `to_v21` and
+`from_native` need pyarrow and PyAV (`av`) instead; a lerobot 0.6.1 environment has both.
 """

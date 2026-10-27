@@ -67,6 +67,7 @@ On pikkumasi2tb (kaivuriprokkis main a631ff5, TRT 10.16):
 ## RTC (chunk-to-chunk consistency)
 
 The work plan is kaivuriprokkis `native_stack/notes/RTC_PLAN.md` (branch `feat/pi05-rtc-plan`).
+Training side (training-time RTC for pi0.5 and GR00T N1.7): [RTC_TRAINING.md](RTC_TRAINING.md).
 This exporter covers its P5 export side, plus the CPU oracle of P1 in Python.
 
 - `rtc.py`: a NumPy reference of both modes, which the C++ host library and device op must
