@@ -11,6 +11,7 @@ The v3.0 -> v2.1 step is `vla_common.dataset.to_v21`. Videos must be H.264 (torc
 """
 import argparse
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -55,7 +56,8 @@ def main():
         raise SystemExit(f"{a.out} exists; use a new directory")
     (a.out / "meta").mkdir(parents=True)
     for name in ("data", "videos"):
-        (a.out / name).symlink_to(src / name, target_is_directory=True)
+        # relative, so the view survives the tree being moved
+        (a.out / name).symlink_to(os.path.relpath(src.resolve() / name, a.out.resolve()), target_is_directory=True)
     for name in COPY:
         shutil.copy2(src / "meta" / name, a.out / "meta" / name)
 
