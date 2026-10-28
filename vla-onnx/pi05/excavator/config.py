@@ -109,9 +109,10 @@ def _excavator(name: str, model, **overrides) -> _config.TrainConfig:
             warmup_steps=1_000, peak_lr=5e-5, decay_steps=30_000, decay_lr=5e-6
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        # EMA adds a full fp32 parameter copy (~13 GB) on device and in every checkpoint save;
-        # it does not fit next to AdamW + the save's host copy in the Spark's 121 GB.
-        ema_decay=None,
+        # OpenPI's default. The saved params are the EMA copy. Fits on the Spark with the
+        # cuda_async allocator (spark_env.py): 72 GB device, >= 14 GB free during saves at batch 32.
+        # --ema-decay None turns it off.
+        ema_decay=0.99,
         weight_loader=weight_loaders.CheckpointWeightLoader(PI05_BASE),
         num_train_steps=30_000,
         keep_period=None,

@@ -185,17 +185,30 @@ PYTHONPATH=<pytest> $PY -m pytest tests -q                                      
 | | trained | frozen | GPU / total RAM |
 |---|---|---|---|
 | GR00T N1.7 (NVIDIA default) | projectors + DiT, 1.62 B (51.5 %) | vision, LLM | 38 GB / ~74 GB with 2 workers |
-| pi0.5 (OpenPI default) | everything | nothing | fits; **EMA off** |
+| pi0.5 (OpenPI default) | everything | nothing | 72 GB with EMA (59 GB without) / ~81 GB |
 
 - **Full GR00T fine-tune** (`--tune-visual --tune-llm`): estimated, not run. +1.5 B params x 12 B
   (grad + AdamW) ~ +18 GB, plus 10-20 GB activations: ~65-75 GB GPU, ~100-110 GB total, against
   memguard's 8 GB floor. If tight: batch 16 x grad-accum 2, 1 worker, gradient checkpointing.
   Expect ~3-4 s/step. X-VLA lesson: head-only drove badly on the machine and full fine-tune won,
   so try this if the head-only GR00T drives poorly.
-- **EMA** (OpenPI default, decay 0.99) keeps a smoothed fp32 copy of the weights that is what gets
-  deployed: usually a little better and smoother. It costs ~13 GB more on device and in every
-  save, which with AdamW + the save's host copy did not fit, so `ema_decay=None`. Cheaper
-  substitutes: average the last few checkpoints, or decay the LR lower at the end.
+- **EMA** (OpenPI default, decay 0.99) keeps a smoothed fp32 copy of the weights, and that copy is
+  what gets saved and deployed: usually a little better and smoother. **On by default since
+  2026-10-28** (`--ema-decay None` turns it off). Measured at batch 32, `pi05_excavator_rtc`:
+
+  | allocator, cap | EMA | device | free while training / lowest in a save | s/step |
+  |---|---|---|---|---|
+  | BFC 85 % | 0.99 | 106 GB | 8 GB: memguard kill at step 0 | - |
+  | BFC 72 % | 0.99 | 90 GB (whole cap) | 20 / 4 GB: kill in the save | 18.4 |
+  | BFC 65 % | 0.99 | - | OOM: 21.9 GB step scratch does not fit | - |
+  | **cuda_async 72 %** | **0.99** | **72 GB** | **40 / 14 GB, saves ok** | **17.5** |
+  | cuda_async 72 % | off | 60 GB | - / 28 GB | 17.5 |
+
+  BFC keeps every freed block and needs the step's scratch contiguous; `spark_env.py` now selects
+  `cuda_async`. EMA costs no step time (same step-20 loss with and without). Saves block ~1 s and
+  finish in 10-20 s on the internal NVMe. The step-20 checkpoint is finite and moved 2.4e-7/element
+  from pi05_base (live weights would be ~1.2e-5, EMA ~8e-7), so the saved params are the EMA copy.
+  Full resumable saves (`OPENPI_SAVE_OPT_STATE=1`, ~53 GB host copy) are still too big.
 - **Two Sparks** (ConnectX-7 link) give room for both, but only with sharding; plain DDP keeps a
   full copy per box. GR00T already trains through DeepSpeed (ZeRO-2 default, ZeRO-3 available);
   multi-node is `torchrun --nnodes 2`, untested. OpenPI has `fsdp_devices` and a

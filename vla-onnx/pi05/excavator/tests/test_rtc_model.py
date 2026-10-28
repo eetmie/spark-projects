@@ -16,6 +16,9 @@ import rtc_model  # noqa: E402
 
 from openpi.models import pi0_config  # noqa: E402
 
+# True fp32 matmuls: the GPU default (TF32) puts run-to-run kernel choice above the 2e-5 checks.
+jax.config.update("jax_default_matmul_precision", "highest")
+
 H = 10
 
 

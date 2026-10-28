@@ -5,10 +5,10 @@
 
 JAX settings are in spark_env.py. Checkpoint saving on the Spark's 121 GB unified memory:
 - Orbax otherwise writes the whole checkpoint as one in-memory OCDBT transaction, a second full
-  copy until commit; a byte limit streams it (OPENPI_SAVE_CONCURRENT_GB, >= the largest array,
-  4.8 GB fp32).
-- Even so, training holds ~80 GB and a full save's host copy adds ~40 GB, so checkpoints keep
-  params + norm stats only unless OPENPI_SAVE_OPT_STATE=1.
+  copy until commit; a byte limit streams it (OPENPI_SAVE_CONCURRENT_GB, default 5, >= the largest
+  array, 4.8 GB fp32).
+- A full save's host copy adds ~40 GB (~53 GB with EMA), so checkpoints keep params (the EMA copy
+  when EMA is on) + norm stats only unless OPENPI_SAVE_OPT_STATE=1.
 """
 
 import functools
@@ -26,7 +26,7 @@ import spark_env  # noqa: E402, F401
 import orbax.checkpoint as ocp  # noqa: E402
 
 ocp.PyTreeCheckpointHandler = functools.partial(
-    ocp.PyTreeCheckpointHandler, save_concurrent_gb=int(os.environ.get("OPENPI_SAVE_CONCURRENT_GB", "8"))
+    ocp.PyTreeCheckpointHandler, save_concurrent_gb=int(os.environ.get("OPENPI_SAVE_CONCURRENT_GB", "5"))
 )
 
 from openpi.training import checkpoints as _checkpoints  # noqa: E402

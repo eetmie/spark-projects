@@ -6,7 +6,12 @@ Research date: 2026-10-28. Repository baseline: `f908e4e`; OpenPI pin recorded i
 Preferred hardware is one DGX Spark. The fallback is two A100 40 GB GPUs. Keep the
 native OpenPI JAX trainer and full fine-tuning for the first EMA experiment.
 **Full FP32 EMA with the existing params-only saver is worth testing on Spark
-before changing to LoRA or moving machines.** Its fit remains unmeasured.
+before changing to LoRA or moving machines.**
+
+**Result (2026-10-28): it fits at batch 32 with JAX's `cuda_async` allocator** (72 GB device,
+>= 14 GB free through saves, 17.5 s/step, no step-time cost). The default BFC allocator could not
+save. EMA is now on by default. Measurements: [RTC_TRAINING.md](RTC_TRAINING.md), "What trains,
+and the memory budget".
 
 ## Public training reports
 
