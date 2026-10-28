@@ -177,6 +177,30 @@ PYTHONPATH=<pytest> $PY -m pytest tests -q                                      
   RTC `d_max` 20, 10k steps (decay 10k) -> `pi05/checkpoints/pi05_excavator_rtc/digging640_rtc20`.
   An RTC checkpoint also runs on the existing scalar-time export at delay 0.
 - 5 CPU tests for `from_native` (`vla-onnx/common/tests`, synthetic two-run session).
+- No validation split: both initial runs train on all 100 takes. Hold out whole takes (5 rock
+  + 5 sand) when checkpoints need an offline comparison.
+
+## What trains, and the memory budget (one Spark, 121 GB unified)
+
+| | trained | frozen | GPU / total RAM |
+|---|---|---|---|
+| GR00T N1.7 (NVIDIA default) | projectors + DiT, 1.62 B (51.5 %) | vision, LLM | 38 GB / ~74 GB with 2 workers |
+| pi0.5 (OpenPI default) | everything | nothing | fits; **EMA off** |
+
+- **Full GR00T fine-tune** (`--tune-visual --tune-llm`): estimated, not run. +1.5 B params x 12 B
+  (grad + AdamW) ~ +18 GB, plus 10-20 GB activations: ~65-75 GB GPU, ~100-110 GB total, against
+  memguard's 8 GB floor. If tight: batch 16 x grad-accum 2, 1 worker, gradient checkpointing.
+  Expect ~3-4 s/step. X-VLA lesson: head-only drove badly on the machine and full fine-tune won,
+  so try this if the head-only GR00T drives poorly.
+- **EMA** (OpenPI default, decay 0.99) keeps a smoothed fp32 copy of the weights that is what gets
+  deployed: usually a little better and smoother. It costs ~13 GB more on device and in every
+  save, which with AdamW + the save's host copy did not fit, so `ema_decay=None`. Cheaper
+  substitutes: average the last few checkpoints, or decay the LR lower at the end.
+- **Two Sparks** (ConnectX-7 link) give room for both, but only with sharding; plain DDP keeps a
+  full copy per box. GR00T already trains through DeepSpeed (ZeRO-2 default, ZeRO-3 available);
+  multi-node is `torchrun --nnodes 2`, untested. OpenPI has `fsdp_devices` and a
+  `process_count`-aware loader, but nothing calls `jax.distributed.initialize`, so multi-host
+  JAX needs a small patch, untested.
 
 ## Not done
 
