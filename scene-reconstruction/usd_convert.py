@@ -5,11 +5,11 @@ Requires pxr (OpenUSD) and msgpack. If host Python is missing them,
 the helper auto-reruns with Isaac Sim's python.sh when available.
 
 Usage:
-    python tools/usd_convert.py /path/to/my_scene/cleaned.ply /path/to/my_scene/scene.usdz
-    python tools/usd_convert.py cleaned.ply
-    python tools/usd_convert.py cleaned.ply --align
-    python tools/usd_convert.py cleaned.ply --align --scale 0.35
-    python tools/usd_convert.py cleaned.ply --align /path/to/my_scene --align-mode first-pose
+    python usd_convert.py /path/to/my_scene/cleaned.ply /path/to/my_scene/scene.usdz
+    python usd_convert.py cleaned.ply
+    python usd_convert.py cleaned.ply --align
+    python usd_convert.py cleaned.ply --align --scale 0.35
+    python usd_convert.py cleaned.ply --align /path/to/my_scene --align-mode first-pose
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _find_isaac_python() -> Path | None:
     ]
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
-            return candidate.resolve()
+            return candidate.absolute()  # not resolve(): a venv python is a symlink to the bare interpreter
     return None
 
 

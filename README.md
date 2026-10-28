@@ -27,10 +27,8 @@ The SmolVLA / X-VLA / EVO1 playbooks are the older LeRobot path; Orin benchmarks
 [jetson-orin-nano-vla](https://github.com/eetmie/jetson-orin-nano-vla).
 
 
-### [`scene-reconstruction/`](scene-reconstruction/) — video → Gaussian splat → Isaac Sim
-Old project, just use Spirula studio (not sponsored). Just add vkQueueWaitIdle() after the normal timeline wait in Stream.cpp (spirula/spirula-studio/src/nn/vk/Stream.cpp:313). Enabled by SS_NN_QUEUE_IDLE_SYNC=1
-
-Otherwise depth generation freezes.
+### [`scene-reconstruction/`](scene-reconstruction/) — Gaussian PLY → USDZ for Isaac Sim
+Just use Spirula Studio (not sponsored haha). Only the PLY → USD converter is left.
 
 
 ## Notes
