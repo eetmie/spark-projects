@@ -10,6 +10,8 @@ Added to bundle.json:
            text capacity, the dataset's trained tasks, and per-prompt physical fixtures
            (FP32 Gr00tPolicy on real frames, plus its bfloat16 run as the error envelope)
   kaivuri  fps, state/action names and the normalization contract (physical_fixture.py)
+  rtc      (checkpoints with rtc_training.json) the DiT graphs take `rtc_mask` + `prefix`
+           (rtc_export.py); fixtures from rtc_patch's sampler with recorded-valve prefixes
 
     python export_bundle.py --checkpoint ../runs/NAME --dataset ../datasets/VIEW --out OUT
 
@@ -88,8 +90,10 @@ def main():
     run([py, GROOT / "reference17.py", "--checkpoint", a.checkpoint, "--vlm-files", vlm,
          "--embodiment", "new_embodiment", "--task", first, "--out", ref])
     env = {**os.environ, "PYTHONPATH": f"{a.exporter}:{a.exporter / 'groot'}"}
-    run([py, a.exporter / "groot/export_split_onnx17.py", "--ref", ref, "--out", out,
-         "--full-kv", "--seq-len", a.seq_len], env=env)
+    rtc_cfg = a.checkpoint / "rtc_training.json"
+    rtc = json.loads(rtc_cfg.read_text()) if rtc_cfg.exists() else None
+    script = HERE / "rtc_export.py" if rtc else a.exporter / "groot/export_split_onnx17.py"
+    run([py, script, "--ref", ref, "--out", out, "--full-kv", "--seq-len", a.seq_len], env=env)
     run([py, "-m", "vla_common.half_boundary", "--bundle", out, "--names", HALF_NAMES], env=env)
     ref.unlink()
 
@@ -121,6 +125,19 @@ def main():
             f.with_suffix(".contract.json").unlink()
             entry[dtype] = str(f.relative_to(out))
         fixtures.append(entry)
+    rtc_fixtures = []
+    if rtc:
+        d_max = int(rtc["max_delay"])
+        delays = sorted({max(1, d_max // 3), max(1, 2 * d_max // 3), max(1, d_max - 2), d_max})
+        smp = task_samples(a.dataset, len(delays))[tasks[0]]
+        entry = {"task": tasks[0], "samples": smp, "delays": delays}
+        for dtype in ("float32", "bfloat16"):
+            f = out / "prompt_fixtures" / f"rtc_{dtype}.npz"
+            run([py, HERE / "physical_fixture.py", "--checkpoint", a.checkpoint, "--dataset", a.dataset,
+                 "--samples", *smp, "--task", tasks[0], "--dtype", dtype, "--rtc-delays", *delays, "--out", f])
+            f.with_suffix(".contract.json").unlink()
+            entry[dtype] = str(f.relative_to(out))
+        rtc_fixtures.append(entry)
 
     from gr00t.data.embodiment_tags import EmbodimentTag
     import modality  # noqa: F401  (registers the excavator config)
@@ -142,6 +159,15 @@ def main():
         "cameras": mc["video"].modality_keys, "contract": contract,
         "dataset": str(a.dataset.resolve()), "checkpoint": str(a.checkpoint.resolve()),
     }
+    if rtc:
+        b["rtc"] = {
+            **rtc, "clean_bucket": 1000,
+            "inputs": {"rtc_mask": "[1,H,1] float, 1 on committed rows (row < delay), every dit graph",
+                       "prefix": "[1,H,D] committed actions, normalized model space clipped to [-1,1], "
+                                 "zero-padded past the real width; first and last dit graph"},
+            "delay": "rows from the observation time that execute before the new chunk can take over",
+            "fixtures": rtc_fixtures,
+        }
     (out / "bundle.json").write_text(json.dumps(b, indent=1) + "\n")
     n = write_manifest(out)
     print(f"bundle {out}: {len(tasks)} trained tasks, capacity {b['prompt']['capacity_tokens']} text tokens, "

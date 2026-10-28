@@ -285,13 +285,48 @@ cd groot/excavator && $PY export_bundle.py --checkpoint ../runs/digging640_rtc12
 - A re-export of the same checkpoint rsyncs in ~13 s against a hardlinked copy of the previous
   bundle (same weights, small graph diffs).
 
+### RTC export and board runtime (2026-10-28)
+
+The board had been running the RTC12 checkpoint with the stock sampler: fresh noise, no prefix,
+every chunk replacing the last. The live log reconstructed handover jumps up to 1.30 valve units
+(84 of 797 above 0.5). Now the trained conditioning runs on the board as well.
+
+- **Graphs** (`rtc_export.py`, picked by `export_bundle.py` when the checkpoint has
+  `rtc_training.json`): every `dit_k` takes `rtc_mask` [1,H,1]; dit_0 and the last chunk also
+  take `prefix` [1,H,D]. Committed rows are written into the iterate before each step and after
+  the last. They get the clean time (bucket 1000) in the action encoder and in every AdaLN; the
+  state token and the free rows keep the step time. The clean-time modulations are baked
+  constants, so the time/mod graphs and the runtime's step constants are unchanged. The hold
+  sits in the FP32 `/euler/` nodes. Only the 8 DiT graphs change (1.7 GB); rsync against the
+  previous bundle sends 8 MB.
+- **Tests** (`tests/test_rtc_export.py`, tiny head, CPU): the split chunks match rtc_patch's
+  sampler at delays 0/1/4/9 (2e-5), committed rows come back bit-exact, and a zero mask
+  reproduces the stock export.
+- **Fixtures**: `physical_fixture.py --rtc-delays` runs Gr00tPolicy with rtc_patch's sampler. The
+  prefix is the recorded valves of the same frames, normalized and clipped. The bundle carries
+  FP32 + bf16 RTC fixtures for delays 4/8/10/12. FP32 committed rows equal clip(recorded) within
+  6e-8. The step from row d-1 to row d is 0.03-0.05, against 0.02-0.03 in the recording.
+- **Runtime** (`groot_live.py`, kaivuriprokkis): d = ceil((recent max observation -> result
+  latency + 40 ms) x fps), capped at the trained 12 and at the rows the running plan still
+  covers. The prefix is the running plan as the controller interpolates it, at the new chunk's
+  row times, converted back to model units. `--rtc off` runs the stock sampler on the same
+  engines for A/B.
+- **Board** (bundle `~/bundles/groot17-dig640-rtc`): parity PASSES on every prompt and on all
+  four RTC delays, with committed rows bit-exact on TensorRT. 251 ms p50 vs 248 without RTC.
+  Live, 60 s each, same engines and static scene (valves and pump cut), handover jump measured
+  at the first send of each plan:
+
+  | | RTC on (d = 11) | `--rtc off` |
+  |---|---|---|
+  | handover jump p50 / p99 / max | 0.001 / 0.089 / 0.107 | 0.137 / 0.689 / 0.753 |
+  | handovers > 0.5 | 0 / 228 | 9 / 227 |
+  | handover row p50 / max | 9.3 / 10.4 | 9.4 / 10.3 |
+  | inference p50 | 253.5 ms | 255.5 ms |
+
 ## Not done
 
-0. **GR00T RTC sampling on the full model.** It has been run through the tiny-head tests only.
-   The training path ran at full size.
-1. **GR00T export of an RTC checkpoint.** The split exporter traces the action encoder and DiT
-   with a scalar timestep. Per-token time means an encoder input `[B, H]` and per-token adaLN in
-   every DiT engine. The board's `flow_rtc` CUDA adapter covers NVIDIA's strength ramp only.
+1. **Delay distribution.** `uniform(0..12)` trains every d equally, but the board commits ~10-12
+   rows. A re-train could weight d around the measured latency, or raise d_max to ~15 for slack.
 2. **pi0.5 exporter references with a prefix.** The exporter's stock references use OpenPI's
    PyTorch model. Mode C fixtures need the same per-row change there, or JAX references.
 3. **Correlated noise.** This is optional and only matters for Mode A inpainting

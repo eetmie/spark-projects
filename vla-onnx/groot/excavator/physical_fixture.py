@@ -7,6 +7,10 @@ the raw inputs, noise and valve chunks, plus the checkpoint's normalization (con
 
     python physical_fixture.py --checkpoint ../runs/NAME --dataset ../datasets/VIEW \
         --samples 50:100 75:300 99:0 --task "scoop the sand ..." --out fixture_physical.npz
+
+`--rtc-delays 0 6 12` (cycled over the samples) runs rtc_patch.py's training-time RTC sampler:
+the committed rows are the recorded valves of the same frames, normalized and clipped as the
+processor does, padded to the model width. Saved as `rtc_delay` [N] and `rtc_prefix` [N,H,D].
 """
 import argparse
 import json
@@ -21,6 +25,7 @@ sys.path.insert(0, str(HERE))
 
 import finetune  # noqa: E402
 import modality  # noqa: E402, F401
+import rtc_patch  # noqa: E402
 from open_loop import parse_observation  # noqa: E402
 
 
@@ -54,6 +59,8 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--dtype", choices=("float32", "bfloat16"), default="float32",
                    help="Gr00tPolicy casts model and inputs to bfloat16; float32 is the exact reference")
+    p.add_argument("--rtc-delays", type=int, nargs="+",
+                   help="training-time RTC: committed rows per sample, cycled (recorded valves as prefix)")
     p.add_argument("--out", type=pathlib.Path, required=True)
     a = p.parse_args()
 
@@ -82,15 +89,41 @@ def main():
     obs_mc.pop("action")
     cfg = policy.model.config
     gen = torch.Generator().manual_seed(a.seed)
+    ct = contract(a.checkpoint, tag.value, mc)
+    rtc = {"delay": 0, "prefix": None}
+    if a.rtc_delays:
+        if max(a.rtc_delays) >= cfg.action_horizon or min(a.rtc_delays) < 0:
+            raise SystemExit("--rtc-delays must lie in [0, action_horizon)")
+        rtc_patch.apply(None)                       # per-row-time sampling; weights unchanged
+        head = policy.model.action_head
+        sampler = head.get_action_with_features
+
+        def with_rtc(**kw):
+            kw["action_input"]["rtc_prefix"] = rtc["prefix"]
+            return sampler(**{**kw, "options": {"rtc_delay": rtc["delay"]}})
+        head.get_action_with_features = with_rtc
+        (side,) = ct["action"].values()
+        a_lo, a_hi = np.asarray(side["min"]), np.asarray(side["max"])
     vkeys, skey = mc["video"].modality_keys, mc["state"].modality_keys[0]
     akey, lkey = mc["action"].modality_keys[0], mc["language"].modality_keys[0]
 
     out = {k: [] for k in ("raw", "state_deg", "noise", "actions", "gt", "episode", "frame")}
+    if a.rtc_delays:
+        out |= {"rtc_delay": [], "rtc_prefix": []}
     tasks = []
     real_randn = torch.randn
-    for s in a.samples:
+    for k_sample, s in enumerate(a.samples):
         ep, fr = (int(x) for x in s.split(":"))
         traj = loader[ep]
+        gt = np.vstack(traj[f"action.{akey}"].to_numpy())[fr:fr + cfg.action_horizon]
+        gt = np.pad(gt, ((0, cfg.action_horizon - len(gt)), (0, 0)), mode="edge")
+        if a.rtc_delays:
+            # gr00t.data.utils.normalize_values_minmax + clip_outliers, then zero padding.
+            z = np.clip(2 * (gt - a_lo) / (a_hi - a_lo) - 1, -1.0, 1.0)
+            pre = np.zeros((cfg.action_horizon, cfg.max_action_dim), np.float32)
+            pre[:, :z.shape[1]] = z
+            rtc["delay"] = a.rtc_delays[k_sample % len(a.rtc_delays)]
+            rtc["prefix"] = torch.from_numpy(pre)[None].to("cuda")
         dp = extract_step_data(traj, fr, obs_mc, tag)
         obs = {f"state.{k}": v for k, v in dp.states.items()}
         obs |= {f"video.{k}": np.array(v) for k, v in dp.images.items()}
@@ -102,18 +135,22 @@ def main():
             act, _ = policy.get_action(parse_observation(obs, mc))
         finally:
             torch.randn = real_randn
-        gt = np.vstack(traj[f"action.{akey}"].to_numpy())[fr:fr + cfg.action_horizon]
         out["raw"].append(np.stack([obs[f"video.{k}"][-1] for k in vkeys]))   # [V,H,W,3] current
         out["state_deg"].append(obs[f"state.{skey}"][-1].astype(np.float32))
         out["noise"].append(noise.numpy()[0])
         out["actions"].append(np.asarray(act[akey])[0].astype(np.float32))
-        out["gt"].append(np.pad(gt, ((0, cfg.action_horizon - len(gt)), (0, 0)), mode="edge"))
+        out["gt"].append(gt.astype(np.float32))
+        if a.rtc_delays:
+            out["rtc_delay"].append(rtc["delay"])
+            out["rtc_prefix"].append(pre)
         out["episode"].append(ep)
         out["frame"].append(fr)
         tasks.append(task)
-        print(f"ep {ep} frame {fr}: state {out['state_deg'][-1].round(2)} row0 {out['actions'][-1][0].round(3)}")
+        print(f"ep {ep} frame {fr}: state {out['state_deg'][-1].round(2)} row0 {out['actions'][-1][0].round(3)}"
+              + (f" rtc delay {rtc['delay']}" if a.rtc_delays else ""))
     meta = {"checkpoint": str(a.checkpoint.resolve()), "dataset": a.dataset, "tasks": tasks,
-            "cameras": vkeys, "dtype": a.dtype, "contract": contract(a.checkpoint, tag.value, mc), "seed": a.seed}
+            "cameras": vkeys, "dtype": a.dtype, "contract": ct, "seed": a.seed,
+            "rtc": {"sampler": "rtc_patch training-time", "delays": a.rtc_delays} if a.rtc_delays else None}
     np.savez_compressed(a.out, **{k: np.stack(v) for k, v in out.items()},
                         meta=np.array(json.dumps(meta)))
     (a.out.with_suffix(".contract.json")).write_text(json.dumps(meta["contract"], indent=1) + "\n")
