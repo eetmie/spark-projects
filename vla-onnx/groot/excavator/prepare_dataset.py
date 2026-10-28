@@ -8,6 +8,11 @@ are symlinks to the source, meta/ is a copy without stats.json, plus modality.js
 source dataset (shared with OpenPI training) is never written.
 
 The v3.0 -> v2.1 step is `vla_common.dataset.to_v21`. Videos must be H.264 (torchcodec).
+
+`--action-bounds fixed` writes meta/stats.json itself: GR00T's own statistics, except the action's
+min/max/q01/q99 are the valves' physical bounds -1/+1. GR00T keeps a complete stats.json, and its
+min-max normalization is then the identity: no percentile clipping, neutral zero stays zero.
+The empirical statistics are kept beside it as meta/stats_empirical.json. State is unchanged.
 """
 import argparse
 import json
@@ -32,6 +37,8 @@ def main():
     p.add_argument("--state-dims", type=int, help="leading observation.state dims to use (default: all)")
     p.add_argument("--action-dims", type=int, default=4, help="leading action dims: 4 valves, 6 with tracks")
     p.add_argument("--cameras", nargs="+", default=["cam1", "cam2"])
+    p.add_argument("--action-bounds", choices=("dataset", "fixed"), default="dataset",
+                   help="dataset: GR00T's q01/q99 (computed at training); fixed: valves' physical -1/+1")
     a = p.parse_args()
 
     src = a.src.resolve()
@@ -72,6 +79,18 @@ def main():
     provenance = {"source": str(src), "fps": info["fps"], "episodes": info["total_episodes"],
                   "frames": info["total_frames"], "state_names": names("observation.state", state_dims),
                   "action_names": names("action", a.action_dims), "cameras": a.cameras}
+    if a.action_bounds == "fixed":
+        from gr00t.data.stats import calculate_dataset_statistics
+
+        floats = [k for k, f in feats.items() if "float" in f["dtype"]]
+        stats = calculate_dataset_statistics(list(a.out.glob("data/*/*.parquet")), floats)
+        (a.out / "meta" / "stats_empirical.json").write_text(json.dumps(stats, indent=4) + "\n")
+        act = stats["action"]
+        n = len(act["min"])
+        act.update({"min": [-1.0] * n, "q01": [-1.0] * n, "max": [1.0] * n, "q99": [1.0] * n})
+        (a.out / "meta" / "stats.json").write_text(json.dumps(stats, indent=4) + "\n")
+        provenance["action_bounds"] = {"kind": "fixed physical", "min": -1.0, "max": 1.0,
+                                       "empirical": "meta/stats_empirical.json"}
     (a.out / "meta" / "kaivuri_source.json").write_text(json.dumps(provenance, indent=2) + "\n")
     print(json.dumps(provenance, indent=2))
 

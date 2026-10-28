@@ -323,6 +323,25 @@ every chunk replacing the last. The live log reconstructed handover jumps up to 
   | handover row p50 / max | 9.3 / 10.4 | 9.4 / 10.3 |
   | inference p50 | 253.5 ms | 255.5 ms |
 
+### Normalization and full fine-tune comparisons (2026-10-28)
+
+Each changes one thing against A0 = `digging640_rtc12` (head-only, q01/q99 action bounds):
+
+| run | change | s/step (batch 32) | 20k steps |
+|---|---|---|---|
+| A1 `digging640_rtc12_fixedbounds` | action bounds fixed at the valves' -1/+1 | 2.59 | ~14 h |
+| F0 `digging640_rtc12_fullft` | `--tune-llm --tune-visual` (3.14 B trainable) | 4.8 | ~27 h |
+
+- A1: `prepare_dataset.py --action-bounds fixed` writes a complete `meta/stats.json`, so GR00T
+  keeps it. These are GR00T's own statistics, except action min/max/q01/q99 = -1/+1. Min-max
+  normalization is then the identity: no clipping, and neutral stays 0. The empirical stats are
+  kept as `stats_empirical.json`. A 10-step smoke checkpoint carries -1/+1 in
+  `processor/statistics.json`, with state stats identical to A0.
+- F0 fits on one Spark: ~98 GB used, at least 23 GB available (memguard floor 8).
+- `runs/queue_norm_fullft.sh` (`ONLY=A1|F0`) trains and exports each to `~/bundles/groot17-NAME`.
+  `runs/to_board.sh NAME` rsyncs it against the RTC bundle and runs board parity. Both are local
+  (runs/ is ignored).
+
 ## Not done
 
 1. **Delay distribution.** `uniform(0..12)` trains every d equally, but the board commits ~10-12
