@@ -1,18 +1,11 @@
-#!/usr/bin/env python3
-"""Bundle (ORT on the Spark, or TensorRT on the Orin) vs the stock-PyTorch reference.
-
-    python parity.py --bundle work/groot-n16-split.fp32 --ref work/ref_robocasa_v3.npz
-    python parity.py --bundle ~/bundles/groot-n16-split --ref ref.npz --backend trt --cache DIR
-"""
+"""Bundle-vs-reference helpers shared by parity17.py: the ORT CPU runner and the metrics."""
 
 from __future__ import annotations
 
-import argparse
-import json
 
 import numpy as np
 
-from pipeline import Bundle, infer
+from pipeline17 import Bundle
 
 
 def ort_runner(bundle: Bundle, threads: int):
@@ -47,32 +40,3 @@ def compare(name, a, b):
     return res
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--bundle", required=True)
-    ap.add_argument("--ref", required=True)
-    ap.add_argument("--backend", default="ort", choices=["ort", "trt"])
-    ap.add_argument("--cache", help="trt: engine directory")
-    ap.add_argument("--threads", type=int, default=16)
-    a = ap.parse_args()
-
-    bundle = Bundle(a.bundle)
-    r = np.load(a.ref)
-    if a.backend == "ort":
-        run = ort_runner(bundle, a.threads)
-    else:
-        from trt_runtime import Engines
-        run = Engines(bundle, a.cache).run
-
-    # The processor's own pixels: its 256 -> 252 bicubic resize is a camera-side concern.
-    pv = r["pixel_values"].astype(np.float32)
-    timings = {}
-    act = infer(bundle, run, pv, r["state"], r["noise"], timings=timings)
-    print({k: round(v, 1) for k, v in timings.items()})
-    res = compare("action_pred", act, r["action_pred"])
-    first = compare("first action", act[:, 0], r["action_pred"][:, 0])
-    print(json.dumps({"chunk": res, "first": first}))
-
-
-if __name__ == "__main__":
-    main()

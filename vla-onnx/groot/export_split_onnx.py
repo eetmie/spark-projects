@@ -1,32 +1,15 @@
-#!/usr/bin/env python3
-"""Export GR00T N1.6 as split ONNX graphs for the 8 GB Orin, then a mixed-FP16 copy.
+"""ONNX export helpers shared by export_split_onnx17.py: graph dump, mixed-FP16 conversion
+(RMSNorm kept FP32 by name, FP16 round trips stripped) and duplicate-Cast cleanup.
 
-Graphs (static shapes, one per TensorRT engine; see groot_split.py for the pipeline):
-
-    vision_{k}  SigLIP2 chunks; the last adds pixel unshuffle + mlp1
-    llm_{k}     Qwen3 layer chunks over the padded sequence; the last adds the final norm
-    cond        vlln + embodiment-sliced state encoder
-    time        the two sinusoidal encodings of t, kept FP32
-    dit_{k}     one denoising step in chunks; the last adds the decoder and Euler update
-
-Chunks are packed to --budget-m million params, the per-engine TensorRT build budget
-measured on this board for X-VLA (vla-onnx/xvla/notes/split_design.md). The 151680 x 2048
-token embedding is NOT a graph: it ships as an FP16 .npy the runtime memory-maps and
-gathers from on the CPU, so its 620 MB never becomes resident.
-
-    python export_split_onnx.py --ref work/ref_robocasa_v3.npz --out ~/bundles/groot-n16-split
+The N1.6 exporter that also lived here was removed 2026-10-28.
 """
 
 from __future__ import annotations
 
-import argparse
-import json
-import shutil
 import sys
 import time
 from pathlib import Path
 
-import numpy as np
 import onnx
 import torch
 
@@ -37,11 +20,10 @@ for _p in (HERE.parent / "common", HERE.parent):    # spark-projects layout, rep
 
 import re  # noqa: E402
 
-from vla_common.bundle import write_manifest  # noqa: E402
+from vla_common.bundle import write_manifest  # noqa: E402, F401  (re-exported to export_split_onnx17)
 from vla_common.fp16_weights import FP16_SENSITIVE_OPS  # noqa: E402
 
-from groot_split import (MASK_NEG, Cond, Contract, DitChunk, LlmChunk,  # noqa: E402
-                         TimeEmb, VisionChunk, layer_plans, load_policy, n_params)
+from groot_split import n_params  # noqa: E402
 
 SENSITIVE = tuple(FP16_SENSITIVE_OPS)
 
@@ -147,122 +129,3 @@ def dedupe_casts(path: Path) -> int:
     return dropped
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--ref", required=True, help="reference.py output: fixes the contract")
-    ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--seq-len", type=int, default=320)
-    ap.add_argument("--budget-m", type=float, default=105.0)
-    ap.add_argument("--keep-fp32", action="store_true", help="also keep the FP32 graphs")
-    a = ap.parse_args()
-
-    r = np.load(a.ref)
-    meta = json.loads(str(r["meta"]))
-    policy = load_policy(meta["checkpoint"], torch.float32)
-    eagle = policy.backbone.model
-    tok = eagle.config.image_token_index
-    ids = r["input_ids"]
-    n_real = ids.shape[1]
-    assert n_real <= a.seq_len
-    c = Contract(meta["embodiment"], int(r["embodiment_id"]), meta["views"],
-                 tuple(r["pixel_values"].shape[-2:]), int((ids == tok).sum()) // meta["views"],
-                 a.seq_len)
-    plans = layer_plans(policy, int(a.budget_m * 1e6))
-
-    fp32 = a.out.parent / (a.out.name + ".fp32")
-    if fp32.exists():
-        shutil.rmtree(fp32)
-    fp32.mkdir(parents=True)
-    graphs = []
-    S, V = c.seq_len, c.views
-    D = eagle.config.text_config.hidden_size
-    vd = eagle.config.vision_config.hidden_size
-    grid = (c.image_hw[0] // 14) * (c.image_hw[1] // 14)
-
-    def add(name, module, args, inputs, outputs):
-        dump(module, args, fp32 / f"{name}.onnx", inputs, outputs)
-        graphs.append({"name": name, "file": f"{name}.onnx", "inputs": inputs, "outputs": outputs,
-                       "params_m": round(n_params(module) / 1e6, 1)})
-
-    with torch.no_grad():
-        for k, (lo, hi) in enumerate(plans["vision"]):
-            m = VisionChunk(policy, lo, hi, c.image_hw).eval()
-            x = torch.zeros(V, 3, *c.image_hw) if m.first else torch.zeros(V, grid, vd)
-            add(f"vision_{k}", m, (x,), ["pixel_values" if m.first else "x"],
-                ["vision_tokens" if m.last else "x_out"])
-        for k, (lo, hi) in enumerate(plans["llm"]):
-            m = LlmChunk(policy, lo, hi, S).eval()
-            add(f"llm_{k}", m, (torch.zeros(1, S, D),), ["h"], ["features" if m.last else "h_out"])
-        add("cond", Cond(policy, c.embodiment_id).eval(),
-            (torch.zeros(1, S, D), torch.zeros(1, 1, c.state_dim)),
-            ["features", "state"], ["vl", "state_features"])
-        add("time", TimeEmb(policy).eval(), (torch.zeros(1),), ["t"], ["t_proj", "tau"])
-        hd = policy.action_head.input_embedding_dim
-        dit_args = (torch.zeros(1, 1 + c.action_horizon, hd), torch.zeros(1, hd),
-                    torch.zeros(1, S, D), torch.zeros(1, 1, S), torch.zeros(1, 1, S))
-        names = ["h", "temb", "vl", "text_bias", "image_bias"]
-        for k, (lo, hi) in enumerate(plans["dit"]):
-            m = DitChunk(policy, lo, hi, c).eval()
-            if m.first:
-                args = (torch.zeros(1, c.action_horizon, c.action_dim), torch.zeros(1, 256),
-                        torch.zeros(1, 1, hd), torch.zeros(1, 1, hd), *dit_args[2:])
-                add(f"dit_{k}", m, args,
-                    ["actions", "t_proj", "tau", "state_features", "vl", "text_bias", "image_bias"],
-                    ["h_out", "temb"])
-            elif m.last:
-                add(f"dit_{k}", m, (*dit_args, torch.zeros(1, c.action_horizon, c.action_dim)),
-                    names + ["actions"], ["actions_next"])
-            else:
-                add(f"dit_{k}", m, dit_args, names, ["h_out"])
-
-    emb = eagle.language_model.get_input_embeddings().weight.detach().to(torch.float16).numpy()
-    np.save(fp32 / "embed_tokens.npy", emb)
-
-    pad_id = eagle.config.text_config.eos_token_id
-    ids_p = np.concatenate([ids[0], np.full(S - n_real, pad_id)]).astype(np.int64)
-    bundle = {
-        "schema": "groot-n1.6-split/1",
-        "model": "nvidia/GR00T-N1.6-3B",
-        "checkpoint": meta["checkpoint"],
-        "embodiment": c.embodiment, "embodiment_id": c.embodiment_id,
-        "views": V, "image_hw": list(c.image_hw), "tokens_per_image": c.tokens_per_image,
-        "image_mean": 0.5, "image_std": 0.5,
-        "seq_len": S, "prompt_tokens": n_real, "image_token": tok, "pad_token": pad_id,
-        "task": meta["task"], "input_ids": ids_p.tolist(),
-        "mask_neg": MASK_NEG,
-        "action_horizon": c.action_horizon, "action_dim": c.action_dim, "state_dim": c.state_dim,
-        "timesteps": c.timesteps(),
-        "embed_tokens": "embed_tokens.npy",
-        "shortest_image_edge": 256, "crop_fraction": 0.95,
-        # Stock-PyTorch FP32 outputs for seeded inputs (reference.py); the runtime runs
-        # the engines on the same inputs at load and fails closed on a mismatch.
-        "fixture": {"file": "fixture.npz", "source": "stock PyTorch float32"},
-        "chunks": {k: [list(p) for p in v] for k, v in plans.items()},
-        "graphs": graphs,
-    }
-    (fp32 / "bundle.json").write_text(json.dumps(bundle, indent=2))
-
-    print(f"\nmixed FP16 -> {a.out}  (FP32: {list(SENSITIVE)} + every RMSNorm node)")
-    a.out.mkdir(parents=True, exist_ok=True)
-    for g in graphs:
-        src, dst = fp32 / g["file"], a.out / g["file"]
-        if g["name"] == "time":      # the sinusoids: FP32 end to end (groot_split.TimeEmb)
-            shutil.copy2(src, dst)
-        else:
-            to_mixed_fp16(src, dst)
-        g["size_mb"] = round(dst.stat().st_size / 1e6, 1)
-    (a.out / "bundle.json").write_text(json.dumps(bundle, indent=2))
-    print(f"  {sum(g['size_mb'] for g in graphs):.0f} MB of graphs")
-    for g in graphs:
-        n = dedupe_casts(a.out / g["file"])
-        if n:
-            print(f"  {g['name']}: dropped {n} duplicate Cast nodes")
-    shutil.copy2(fp32 / "embed_tokens.npy", a.out / "embed_tokens.npy")
-    shutil.copy2(a.ref, a.out / "fixture.npz")
-    write_manifest(a.out)
-    if not a.keep_fp32:
-        shutil.rmtree(fp32)
-
-
-if __name__ == "__main__":
-    main()

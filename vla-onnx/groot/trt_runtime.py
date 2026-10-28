@@ -7,8 +7,9 @@ in host memory beside the engine's own copy, and on unified memory both count, w
 that. Engines hold their weights once; all execution contexts share ONE scratch buffer
 sized to the largest engine, since the stages run strictly one after another.
 
-    python3 trt_runtime.py build --bundle ~/bundles/groot-n16-split --cache ~/groot-trt
-    python3 trt_runtime.py bench --bundle ~/bundles/groot-n16-split --cache ~/groot-trt
+    python3 trt_runtime.py build --bundle ~/bundles/groot-n17-split --cache ~/groot-trt
+
+Engines is what parity17.py --backend trt runs on.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
-import os
 import resource
 import subprocess
 import sys
@@ -29,7 +29,7 @@ import tensorrt as trt
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from pipeline import Bundle, infer  # noqa: E402
+from pipeline17 import Bundle  # noqa: E402
 
 _cudart = ctypes.CDLL("libcudart.so.13")
 _H2D, _D2H = 1, 2
@@ -207,47 +207,6 @@ class Engines:
         return {n: arr for n, (ptr, arr) in outs.items()}
 
 
-def cmd_bench(a):
-    idle = meminfo()
-    print("idle", json.dumps(idle), flush=True)
-    bundle = Bundle(a.bundle)
-    watch = MemWatch()
-    t0 = time.time()
-    eng = Engines(bundle, a.cache)
-    loaded = meminfo()
-    print(f"loaded {len(eng.engines)} engines in {time.time() - t0:.1f} s, "
-          f"shared scratch {eng.scratch_mb:.0f} MB", json.dumps(loaded), flush=True)
-    b = bundle.b
-    rng = np.random.default_rng(0)
-    img = rng.integers(0, 256, (b["views"], *b["image_hw"], 3), dtype=np.uint8)
-    pv = bundle.normalize(img)
-    state = rng.standard_normal((1, 1, b["state_dim"])).astype(np.float32)
-    lat, parts = [], []
-    for i in range(a.warmup + a.iters):
-        noise = rng.standard_normal((1, b["action_horizon"], b["action_dim"])).astype(np.float32)
-        t = {}
-        act = infer(bundle, eng.run, pv, state, noise, timings=t)
-        if i >= a.warmup:
-            lat.append(t["total_ms"])
-            parts.append(t)
-    mem = watch.stop()
-    after = meminfo()
-    lat = np.array(lat)
-    res = {
-        "engines": len(eng.engines), "views": b["views"], "seq_len": b["seq_len"],
-        "p50_ms": round(float(np.percentile(lat, 50)), 1),
-        "p95_ms": round(float(np.percentile(lat, 95)), 1),
-        "hz": round(1000 / float(np.percentile(lat, 50)), 2),
-        "vision_ms": round(float(np.median([p["vision_ms"] for p in parts])), 1),
-        "backbone_ms": round(float(np.median([p["backbone_ms"] for p in parts])), 1),
-        "dit_ms": round(float(np.median([p["dit_ms"] for p in parts])), 1),
-        "finite": bool(np.isfinite(act).all()),
-        "sys_used_idle_mb": idle["used_mb"], "sys_used_loaded_mb": loaded["used_mb"],
-        "sys_used_after_mb": after["used_mb"], "rss_after_mb": after["rss_mb"], **mem,
-    }
-    print(json.dumps(res), flush=True)
-
-
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "_build_one":
         build_one(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]), int(sys.argv[5]),
@@ -261,13 +220,8 @@ def main():
     b.add_argument("--opt-level", type=int, default=3)
     b.add_argument("--workspace-mb", type=int, default=512)
     b.add_argument("--force", action="store_true")
-    r = sub.add_parser("bench")
-    r.add_argument("--bundle", required=True)
-    r.add_argument("--cache", required=True)
-    r.add_argument("--warmup", type=int, default=3)
-    r.add_argument("--iters", type=int, default=20)
     a = ap.parse_args()
-    {"build": cmd_build, "bench": cmd_bench}[a.cmd](a)
+    cmd_build(a)
 
 
 if __name__ == "__main__":

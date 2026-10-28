@@ -1,6 +1,6 @@
 """GR00T N1.7 cut into traceable pieces sized for the 8 GB Orin.
 
-Same scheme as groot_split.py (N1.6), new backbone: Cosmos-Reason2-2B (Qwen3-VL).
+Split scheme first built for N1.6 (removed 2026-10-28); backbone Cosmos-Reason2-2B (Qwen3-VL).
 
     host   tokens -> embed rows (mmap'd table, gather on CPU)
     vision_k   [N,3,H,W] -> [N,T,2048]   Qwen3-VL ViT + merger; three chunks also emit

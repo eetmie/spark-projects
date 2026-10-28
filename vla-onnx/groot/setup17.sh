@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# GR00T N1.7 export environment on DGX Spark. Own venv: N1.7's Qwen3-VL backbone needs
-# transformers 4.57.3, which cannot share .venv-groot (N1.6, 4.51.3).
+# GR00T N1.7 environment on DGX Spark (export + excavator fine-tune). transformers 4.57.3.
 #
 # The model code is NVIDIA Isaac-GR00T at the n1.7-release tag, fetched as source into
 # $GROOT_SRC and installed without its dependency list (flash-attn, deepspeed, triton
