@@ -215,6 +215,48 @@ PYTHONPATH=<pytest> $PY -m pytest tests -q                                      
   `process_count`-aware loader, but nothing calls `jax.distributed.initialize`, so multi-host
   JAX needs a small patch, untested.
 
+## GR00T digging640_rtc12 on the board (2026-10-28)
+
+The single-frame checkpoint (20k steps) runs on pikkumasi2tb at delay 0 on the existing scalar-time
+export, from live cameras and IMUs to drive plans. Valves and pump were off at the mains.
+
+```bash
+cd vla-onnx/groot/excavator; PY=~/spark-projects/vla-onnx/groot/.venv-groot17/bin/python
+$PY open_loop.py --checkpoint ../runs/digging640_rtc12 --dataset ../datasets/digging_native_640_gr00t \
+  --episodes 0 25 49 50 75 99 --out OUT                       # chunks vs recorded valves
+$PY physical_fixture.py --checkpoint ../runs/digging640_rtc12 --dataset ../datasets/digging_native_640_gr00t \
+  --samples 50:0 50:240 51:600 75:120 99:300 60:450 --task "scoop the sand and dump it into the container" \
+  --dtype float32 --out fixture_physical_sand.npz              # and --dtype bfloat16 for the envelope
+```
+
+- **Export.** jetson-orin-nano-vla 6e2d857 `export/groot` (its K/V-gather + AdaLN-modulation
+  layout, newer than this repo's copy) with `reference17.py`'s `processor/` lookup, run in
+  `.venv-groot17`: `reference17.py --checkpoint runs/digging640_rtc12 --embodiment new_embodiment
+  --task ...`, `export_split_onnx17.py`, `vla_common.half_boundary` as `export.sh` does. 5.3 GB,
+  30 graphs, 2 views x 1 frame, prompt 147 tokens. The baked prompt is one task (one bundle per task).
+  The frozen vision/LLM graphs differ from the base bundle only slightly: rsync against a hardlinked
+  copy of the base bundle sent 2.6 of 5.7 GB.
+- **Open loop** (training takes, so not generalization): mean |chunk - recorded| 0.04-0.10 per
+  valve vs 0.16-0.47 for zero/mean chunks. The error falls from 0.10 at row 0 to 0.063 at row 12,
+  then flattens: rows `< d` carry no loss, so row `i` learns only when `d <= i` (`d_max` 12). At
+  delay 0 the first ~12 rows are the weakest; the board starts playing at row 13-23 anyway.
+- **Normalization.** GR00T min-max normalizes to q01/q99 and clips. For valves this caps the
+  model's output at q99: lift up +0.547, slew +0.790/-0.894 (1% of frames clipped each). The X-VLA
+  runtime uses LeRobot MEAN_STD with no clip. Consider `use_percentiles` off for valve actions.
+- **bf16.** `Gr00tPolicy` casts the model and inputs to bfloat16. Its chunks differ from FP32 by
+  up to 0.089 valve units. `physical_fixture.py --dtype float32` is the exact reference.
+- **Board parity** (`kaivuriprokkis` `groot_live.py parity`, TRT 10.16 host chain): raw IR frames +
+  degrees -> valves vs FP32 Gr00tPolicy on 6 real frames, cosine 0.99954-1.0, mean |d| 0.0002-0.0097.
+  Each sample is closer to FP32 than bf16 Gr00tPolicy is (the gate). The bundle fixture passes
+  (chunk 0.09% of range, preprocessing exact). The FP32 split fed the board's inputs differs
+  from FP32 Gr00tPolicy by 0.0002-0.002 mean, so the prompt, image transform and boundary match.
+- **Live** (`groot_live.py run --start-services --live-pwm --enable-slew --drive`, 120 s): 388
+  chunks back to back, inference p50 302 ms, observation -> plan p50 333 / p99 344 ms. Plans:
+  t0 = observation, renewed every 100 ms. The controller applied the interpolated planned row
+  within 0.0006 mean / 0.014 max (matched by `applied_command_sequence`). No faults.
+- The engines are native TensorRT on the host chain. The AOT kernels and the CUDA-graph device
+  chain assume the base 3-view, 2-frame profile.
+
 ## Not done
 
 0. **GR00T RTC sampling on the full model.** It has been run through the tiny-head tests only.

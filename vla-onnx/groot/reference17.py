@@ -28,7 +28,9 @@ def build_inputs(ckpt: Path, vlm_files: str, embodiment: str, task: str, seed: i
                  raw_hw: tuple[int, int]):
     from gr00t.model.gr00t_n1d7.processing_gr00t_n1d7 import Gr00tN1d7Processor
 
-    proc = Gr00tN1d7Processor.from_pretrained(str(ckpt))
+    # Hub checkpoints keep processor_config.json at the root, NVIDIA fine-tunes in processor/.
+    proc_dir = ckpt / "processor" if (ckpt / "processor/processor_config.json").is_file() else ckpt
+    proc = Gr00tN1d7Processor.from_pretrained(str(proc_dir))
     proc.eval()
     mc = proc.modality_configs[embodiment]
     views = len(mc["video"].modality_keys)
