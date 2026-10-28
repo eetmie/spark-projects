@@ -257,6 +257,32 @@ $PY physical_fixture.py --checkpoint ../runs/digging640_rtc12 --dataset ../datas
 - The engines are native TensorRT on the host chain. The AOT kernels and the CUDA-graph device
   chain assume the base 3-view, 2-frame profile.
 
+### Runtime prompts (2026-10-28)
+
+```bash
+git -C ~/jetson-orin-nano-vla archive 6e2d857 export | tar -x -C groot/third_party/jetson-orin-nano-vla-6e2d857
+cd groot/excavator && $PY export_bundle.py --checkpoint ../runs/digging640_rtc12 \
+  --dataset ../datasets/digging_native_640_gr00t --out BUNDLE        # ~15 min, mostly fixtures
+```
+
+- The processor's prompt is a fixed 135-token prefix (chat start + both image slots), then
+  `tokenize(formalize(text))`, then `<|im_end|>\n`. That reproduces its ids exactly (12 strings,
+  including unicode, empty and 81-token ones; `tokenizers` alone matches `transformers`).
+- The baked MRoPE table is bit-identical for every text length, because the images precede the
+  text and the pads continue its positions. So the LLM graphs are prompt-free. Only the gathered
+  K/V rows baked a prompt; `--full-kv` makes the masks runtime inputs.
+- `--seq-len 256` (2 images need 128 slots, not the base 448) gives 119 text tokens and
+  248 ms on the board, vs 297 ms for the baked 448 bundle (`--full-kv` at 448: 320 ms).
+- bundle.json `prompt`: prefix/suffix ids, `tokenizer.json`, capacity, the dataset's tasks, and
+  per-prompt FP32 + bf16 physical fixtures (each trained task, plus "dig a hole"). bundle.json
+  `kaivuri`: fps, names and the normalization contract, so the board needs no `--contract`.
+- Board (`groot_live.py parity --bundle B`): every prompt, tokenized on the board, passes vs
+  FP32 Gr00tPolicy inside the bf16 envelope. Live, D-pad right/left cycles the list and a typed
+  line is appended to it. A switch drops the in-flight chunk; the controller holds until a chunk
+  observed after the switch.
+- A re-export of the same checkpoint rsyncs in ~13 s against a hardlinked copy of the previous
+  bundle (same weights, small graph diffs).
+
 ## Not done
 
 0. **GR00T RTC sampling on the full model.** It has been run through the tiny-head tests only.
