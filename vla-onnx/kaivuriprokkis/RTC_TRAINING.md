@@ -229,3 +229,12 @@ PYTHONPATH=<pytest> $PY -m pytest tests -q                                      
 4. **The experiment.** Train plain and RTC on the same data (`digging_native_640_simple` first)
    (RTC from scratch, or as the paper does, as a short fine-tune of the plain checkpoint).
    Compare with the board's join metrics at matched delays. Then drive.
+5. **GR00T EMA (later, low priority).** N1.7 and the HF Trainer have none. Plan: a
+   `TrainerCallback` in `groot/excavator/finetune.py` (flag `--ema-decay`, off by default) keeps an
+   fp32 copy of the trainable params, updates it in `on_step_end` with `torch._foreach_lerp_`
+   (decay 0.99-0.999, after the optimizer step), and in `on_save` writes it as the checkpoint's
+   `model-*.safetensors` (live weights kept beside it for a live-vs-EMA comparison), so the exporter
+   needs no change; record it in `rtc_training.json`. Frozen params are unaffected. Cost ~6.5 GB
+   head-only, ~12.6 GB full fine-tune; DeepSpeed ZeRO-2 shards only optimizer state, so the copy is
+   whole per GPU. Test: a short run whose checkpoint differs from the base by the EMA-expected
+   amount (the pi0.5 check), then load and export it.
