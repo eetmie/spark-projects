@@ -1,7 +1,10 @@
 #!/usr/bin/env python
 """Raw kaivuri native sessions -> simplified LeRobot v2.1 training set, in one pass.
 
-    python -m vla_common.dataset.from_native SESSION [SESSION ...] --dst DIR [--crf 18] [--jobs 8]
+    python -m vla_common.dataset.from_native SESSION [SESSION ...] --dst DIR [--crf 18] [--jobs 8] [--v3]
+
+`--v3` also writes DIR_v3, a LeRobot v3.0 copy for the LeRobot policies and lerobot-dataset-viz
+(`to_v3`: LeRobot's own converter, stream copy, ~12 s for 100 takes).
 
 Reads the board recorder's committed takes (`episode-*.ready/{samples.jsonl,cam1.y8,cam2.y8}`,
 format kaivuri-native-episode-v1); a session's `recordings/run-*` resumes are included
@@ -309,6 +312,7 @@ def main():
     p.add_argument("--lossless", action="store_true", help="bit-exact libx264rgb (~125%% of Y8)")
     p.add_argument("--robot-type", default="masi_excavator_native")
     p.add_argument("--jobs", type=int, default=8)
+    p.add_argument("--v3", action="store_true", help="also write DST_v3 (LeRobot v3.0 copy)")
     a = p.parse_args()
     joints = a.state_joints.split(",")
     if len(set(joints)) != len(joints) or any(j not in JOINTS for j in joints):
@@ -399,6 +403,9 @@ def main():
     size = sum(f.stat().st_size for f in a.dst.rglob("*") if f.is_file())
     print(f"wrote {a.dst}: {len(results)} episodes, {total} frames, {size / 2**30:.2f} GB, "
           f"video mean |err| {np.mean(video_err):.2f} (worst episode {max(video_err):.2f})")
+    if a.v3:
+        from vla_common.dataset.to_v3 import to_v3
+        to_v3(a.dst)
 
 
 if __name__ == "__main__":

@@ -32,15 +32,17 @@ colmap_output/
 venv/
 *.egg-info/
 __pycache__/
-__pycache__/
 *.pyc
-*.egg-info/
+.pytest_cache/
 node_modules/
 .claude/
 
 # Third-party clones (vendored separately / cloned at setup time)
 third_party/
 3dgrut/
+
+# Note: `name/` patterns skip symlinks. Data dirs symlinked to the external drive
+# need a slash-less pattern in their playbook .gitignore (groot, kaivuriprokkis, pi05, evo1).
 
 # Misc
 *.log

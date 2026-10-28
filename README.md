@@ -19,8 +19,12 @@ openpi π0.5 (Physical Intelligence) Vision-Language-Action inference, BF16 base
 Full pipeline: JAX→PyTorch convert → ONNX (ModelOpt) → trtexec engine → benchmark.
 See `pi05-spark-inference/notes/findings.md` and `RUNBOOK.md`.
 
-### [`vla-onnx/`](vla-onnx/) — LeRobot VLA → split ONNX → Orin Nano
-Old project, go see jetson-orin-nano-vla
+### [`vla-onnx/`](vla-onnx/) — excavator VLAs: datasets → fine-tune → robot bundles
+Active. Native recordings → LeRobot datasets (`common/vla_common/dataset`), GR00T N1.7 and
+pi0.5 (OpenPI) fine-tunes with training-time RTC, bundles for kaivuriprokkis on the Orin.
+Start at [`vla-onnx/kaivuriprokkis/RTC_TRAINING.md`](vla-onnx/kaivuriprokkis/RTC_TRAINING.md).
+The SmolVLA / X-VLA / EVO1 playbooks are the older LeRobot path; Orin benchmarks live in
+[jetson-orin-nano-vla](https://github.com/eetmie/jetson-orin-nano-vla).
 
 
 ### [`scene-reconstruction/`](scene-reconstruction/) — video → Gaussian splat → Isaac Sim

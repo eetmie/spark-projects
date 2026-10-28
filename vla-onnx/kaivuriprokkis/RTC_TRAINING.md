@@ -15,6 +15,8 @@ Neither is forked. The excavator configs and patches are applied on top at run t
 | `../groot/excavator/prepare_dataset.py` | GR00T view of a v2.1 dataset (symlinks + `modality.json`) |
 | `../groot/excavator/finetune.py` | `launch_finetune.py` with the excavator defaults and `--rtc-max-delay` |
 | `../common/vla_common/dataset/from_native.py` | raw native sessions -> simplified LeRobot v2.1 for both trainers |
+| `../common/vla_common/dataset/to_v3.py` | v2.1 -> LeRobot v3.0 copy (`from_native --v3`), for LeRobot policies and `lerobot-dataset-viz` |
+| `../common/vla_common/dataset/rerun_native.py` | raw native takes in rerun: cameras, every status field, timing, FK arm |
 
 ## Data
 
