@@ -11,6 +11,10 @@ the raw inputs, noise and valve chunks, plus the checkpoint's normalization (con
 `--rtc-delays 0 6 12` (cycled over the samples) runs rtc_patch.py's training-time RTC sampler:
 the committed rows are the recorded valves of the same frames, normalized and clipped as the
 processor does, padded to the model width. Saved as `rtc_delay` [N] and `rtc_prefix` [N,H,D].
+
+A checkpoint trained with GROOT_VIDEO_DELTAS="-k,0" also gets `raw_past` [N,V,H,W,3], each
+camera k frames before `raw`. Samples need FRAME >= k: the loader does not pad by default, and
+a negative index would read the end of the episode.
 """
 import argparse
 import json
@@ -106,14 +110,21 @@ def main():
         a_lo, a_hi = np.asarray(side["min"]), np.asarray(side["max"])
     vkeys, skey = mc["video"].modality_keys, mc["state"].modality_keys[0]
     akey, lkey = mc["action"].modality_keys[0], mc["language"].modality_keys[0]
+    deltas = list(mc["video"].delta_indices)
+    if len(deltas) > 2:
+        raise SystemExit(f"video deltas {deltas}: the board runtime handles [0] and [-k, 0]")
 
     out = {k: [] for k in ("raw", "state_deg", "noise", "actions", "gt", "episode", "frame")}
+    if len(deltas) == 2:
+        out["raw_past"] = []
     if a.rtc_delays:
         out |= {"rtc_delay": [], "rtc_prefix": []}
     tasks = []
     real_randn = torch.randn
     for k_sample, s in enumerate(a.samples):
         ep, fr = (int(x) for x in s.split(":"))
+        if fr + min(deltas) < 0:
+            raise SystemExit(f"sample {s}: frame {fr} has no frame {-min(deltas)} earlier in its episode")
         traj = loader[ep]
         gt = np.vstack(traj[f"action.{akey}"].to_numpy())[fr:fr + cfg.action_horizon]
         gt = np.pad(gt, ((0, cfg.action_horizon - len(gt)), (0, 0)), mode="edge")
@@ -135,7 +146,10 @@ def main():
             act, _ = policy.get_action(parse_observation(obs, mc))
         finally:
             torch.randn = real_randn
-        out["raw"].append(np.stack([obs[f"video.{k}"][-1] for k in vkeys]))   # [V,H,W,3] current
+        video = np.stack([obs[f"video.{k}"] for k in vkeys], 1)      # [T,V,H,W,3], oldest first
+        out["raw"].append(video[-1])                                  # current
+        if len(deltas) == 2:
+            out["raw_past"].append(video[0])                          # deltas[0] frames earlier
         out["state_deg"].append(obs[f"state.{skey}"][-1].astype(np.float32))
         out["noise"].append(noise.numpy()[0])
         out["actions"].append(np.asarray(act[akey])[0].astype(np.float32))
@@ -149,7 +163,7 @@ def main():
         print(f"ep {ep} frame {fr}: state {out['state_deg'][-1].round(2)} row0 {out['actions'][-1][0].round(3)}"
               + (f" rtc delay {rtc['delay']}" if a.rtc_delays else ""))
     meta = {"checkpoint": str(a.checkpoint.resolve()), "dataset": a.dataset, "tasks": tasks,
-            "cameras": vkeys, "dtype": a.dtype, "contract": ct, "seed": a.seed,
+            "cameras": vkeys, "video_delta_indices": deltas, "dtype": a.dtype, "contract": ct, "seed": a.seed,
             "rtc": {"sampler": "rtc_patch training-time", "delays": a.rtc_delays} if a.rtc_delays else None}
     np.savez_compressed(a.out, **{k: np.stack(v) for k, v in out.items()},
                         meta=np.array(json.dumps(meta)))
