@@ -14,9 +14,8 @@
 VLA_ONNX=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SPARK_PROJECTS=$(cd "$VLA_ONNX/.." && pwd)
 
-# The two pipeline environments. lerobot 0.5.1 is the comparison-pinned venv that
-# smolvla and xvla fine-tune in; 0.6.1 is what evo1 needs and what the X-VLA export
-# runs in. They are deliberately NOT interchangeable — see vla-onnx/README.md.
+# The two X-VLA environments. lerobot 0.5.1 is the venv X-VLA fine-tunes in; 0.6.1 is
+# what the X-VLA export runs in. They are deliberately NOT interchangeable — see vla-onnx/README.md.
 VENV_LEROBOT051=${VENV_LEROBOT051:-$VLA_ONNX/.venv-lerobot051}
 VENV_LEROBOT061=${VENV_LEROBOT061:-$VLA_ONNX/.venv-lerobot061}
 

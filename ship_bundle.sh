@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Ship an export bundle from the Spark to the Orin, and verify it on arrival.
 #
-#   ./ship_bundle.sh vla-onnx/smolvla/exports-split-base-v2 orin
+#   ./ship_bundle.sh ~/bundles/xvla-base-split orin
 #   ./ship_bundle.sh vla-onnx/xvla/exports/split orin xvla-base-split
 #
 # The rules this encodes, all of them learned the hard way:

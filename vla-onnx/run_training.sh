@@ -1,50 +1,35 @@
 #!/usr/bin/env bash
-# Fine-tune a VLA on this machine. One entry point, three models.
+# Fine-tune X-VLA on this machine.
 #
-#   ./run_training.sh --model smolvla --dataset masi_digging_dry_2 --cameras cam1 \
-#                     --train-mode expert --chunk 10 --steps 30000
+#   ./run_training.sh --dataset masi_dual_camera --cameras cam1,cam2 --chunk 30 --execute 10 --steps 20000
+#   ./run_training.sh --dataset <recording> --cameras cam1 --holdout none
+#   ./run_training.sh --dataset <recording> --cameras cam1 --dry-run
 #
-#   ./run_training.sh --model xvla --dataset masi_digging_dry_2 --cameras cam1 \
-#                     --chunk 30 --execute 10 --train-mode full --steps 20000
+# This used to drive SmolVLA and EVO1 as well; those playbooks are gone (git tag
+# archive/lerobot-playbooks-2026-10-29 has them). What it encodes that was worth keeping:
 #
-#   ./run_training.sh --model smolvla --dataset X --cameras cam1 --dry-run
+#   * The training mode is explicit and goes into the run name. `full` (879 M) is the
+#     default and what drives the excavator; `frozen` (311 M) scored 14-22 % worse.
 #
-# This replaces 15 scripts: two `run_digging.sh`, seven `queue_*.sh`, two chain scripts
-# and four that had been dead since the tree was renamed (`PROJ=$ROOT` under `set -u`,
-# and paths.sh exports VLA_ONNX, never ROOT). What they encoded that was worth keeping
-# is below, as behaviour rather than as prose.
+#   * The camera set is explicit. `--cameras` builds or refreshes a dataset view (see
+#     vla_common.dataset.view), which closes the trap where a grown recording left the
+#     view describing the old episode count.
 #
-# WHAT USED TO BE INVISIBLE, AND NOW IS NOT
-#
-#   * The training mode. Every SmolVLA excavator run trained 99,880,992 of 450,046,176
-#     parameters because `freeze_vision_encoder` / `train_expert_only` / `train_state_proj`
-#     all default to true in the checkpoint's config and no script ever passed them. The
-#     X-VLA 20k full-finetune that beat the 10k frozen run was produced by a hand-typed
-#     FULL_FT=1 and survives only as the directory string someone chose. `--train-mode` is
-#     now explicit, and it goes into the run name, so the artefact says what it is.
-#
-#   * The camera set. It used to be whichever pre-built dataset view a case statement
-#     happened to point at. `--cameras` builds or refreshes that view (see
-#     vla_common.dataset.view), which also closes the trap where a grown recording left
-#     the view describing the old episode count.
-#
-#   * The learning rate. `--optimizer.lr` was a NO-OP: TrainPipelineConfig.validate()
+#   * The learning rate. `--optimizer.lr` is a NO-OP: TrainPipelineConfig.validate()
 #     replaces the parsed optimizer with policy.get_optimizer_preset() whenever
-#     use_policy_training_preset is true, which is the default. Every run's --optimizer.lr
-#     was discarded. It happened to equal the policy default so nothing was harmed, but
-#     LR=3e-5 would have silently trained at 1e-4. --lr maps to --policy.optimizer_lr.
+#     use_policy_training_preset is true, which is the default. --lr maps to
+#     --policy.optimizer_lr.
 #
 # WAITING FOR THE GPU. `--after-pid` blocks on /proc/<pid>. Do not reach for `pgrep -f`:
-# it matches any process whose argv contains the pattern, including the agent shell that
-# is tailing the run, so a queue can sit "waiting for the GPU" forever with nothing wrong
-# and nothing logged. That cost one overnight scoring run. Wait on a fact, not a guess.
+# it matches any process whose argv contains the pattern, including the shell that is
+# tailing the run, so a queue can sit "waiting for the GPU" forever with nothing logged.
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/paths.sh"
 
 usage() {
-    sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+    sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
     cat <<'USAGE'
 
 Passed straight to lerobot-train -- same names it uses, --flag=value also accepted.
@@ -58,22 +43,21 @@ The short forms are aliases.
   --log_freq N            / --log-freq   (default 250)
   --policy.chunk_size N   / --chunk      (default 50)
   --policy.n_action_steps N / --execute  (default: = chunk_size)
-  --policy.optimizer_lr X / --lr         (default: per model)
-  --policy.load_vlm_weights BOOL / --no-vlm-weights   smolvla (default true)
+  --policy.optimizer_lr X / --lr         (default 1e-4)
   -- ARGS...              everything after this goes to lerobot-train verbatim; a flag
                           this script already sets is refused, naming the owning flag
 
 This script's own -- they compute something, so they are NOT lerobot spellings:
 
-  --model M            smolvla | xvla | evo1                            (required)
   --dataset NAME       a recording under $VLA_DATASETS, or a path       (required)
+  --model xvla         accepted for old command lines; X-VLA is the only model
   --cameras a,b        cameras to train on; builds the dataset view (default: all)
-  --train-mode M       expert | frozen | full | lora   (default: per model)
+  --train-mode M       full | frozen                                    (default: full)
   --holdout SPEC       every10@5 | "5 15 25" | none    (-> --dataset.episodes)
   --init-from PATH     start from this checkpoint instead of the base weights
   --name S             run dir name (default: <cams>-c<chunk>[x<exec>]-<mode>)
   --sweep S            sweep dir name (default: the dataset name)
-  --out DIR            the SWEEP dir, <playbook>/outputs/<sweep>. Not lerobot's
+  --out DIR            the SWEEP dir, xvla/outputs/<sweep>. Not lerobot's
                        --output_dir, which is the run dir inside it.
   --after-pid N        wait for /proc/N to disappear, then start
   --if-stale MODE      camera view staleness: rebuild | reuse | refuse | force
@@ -86,10 +70,10 @@ USAGE
 
 die() { echo "!! $*" >&2; exit 2; }
 
-MODEL="" DATASET="" CAMERAS="" MODE="" NAME="" SWEEP="" OUT=""
-CHUNK=50 EXECUTE="" STEPS=30000 BATCH=32 LR="" SEED=1000
+MODEL=xvla DATASET="" CAMERAS="" MODE=full NAME="" SWEEP="" OUT=""
+CHUNK=50 EXECUTE="" STEPS=30000 BATCH=32 LR=1e-4 SEED=1000
 SAVE_FREQ=2500 WORKERS=10 LOG_FREQ=250 HOLDOUT="every10@5"
-AFTER_PID="" IF_STALE=rebuild INIT_FROM="" VLM_WEIGHTS=true
+AFTER_PID="" IF_STALE=rebuild INIT_FROM=""
 DRY_RUN=0 SMOKE=0 FORCE=0 RESUME_ANYWAY=0
 PASSTHROUGH=()
 
@@ -108,13 +92,9 @@ done
 set -- ${ARGS+"${ARGS[@]}"}
 
 # Where a flag is a straight pass to lerobot-train, it is SPELLED THE WAY LEROBOT SPELLS
-# IT, so there is nothing new to learn and `--batch_size=32` works here exactly as it
-# does there. The short forms are aliases, not the real names.
-#
-# Flags that are NOT a straight pass keep their own names on purpose -- they compute
-# something, and giving them lerobot's spelling would promise passthrough semantics that
-# do not hold. `--out` is the clearest case: it is the SWEEP directory, while lerobot's
-# --output_dir is the RUN directory inside it. Same word, different thing, different flag.
+# IT, so `--batch_size=32` works here exactly as it does there. The short forms are
+# aliases. Flags that compute something keep their own names on purpose: `--out` is the
+# SWEEP directory while lerobot's --output_dir is the RUN directory inside it.
 while [ $# -gt 0 ]; do
     case "$1" in
         # --- computed: no lerobot equivalent -----------------------------------------
@@ -143,31 +123,20 @@ while [ $# -gt 0 ]; do
         --policy.chunk_size|--chunk)  CHUNK=$2; shift 2 ;;
         --policy.n_action_steps|--execute) EXECUTE=$2; shift 2 ;;
         --policy.optimizer_lr|--lr)   LR=$2; shift 2 ;;
-        --policy.load_vlm_weights)    VLM_WEIGHTS=$2; shift 2 ;;
-        --no-vlm-weights)             VLM_WEIGHTS=false; shift ;;
         --)              shift; PASSTHROUGH=("$@"); break ;;
         -h|--help)       usage; exit 0 ;;
         *) die "unknown flag: $1  (--help for the list)" ;;
     esac
 done
 
-[ -n "$MODEL" ]   || { usage; die "--model is required"; }
 [ -n "$DATASET" ] || { usage; die "--dataset is required"; }
+[ "$MODEL" = xvla ] || die "--model $MODEL: only X-VLA is left here.
+   SmolVLA and EVO1 were removed; git checkout archive/lerobot-playbooks-2026-10-29 has them."
 
-# --- model dispatch ------------------------------------------------------------------
-# The three arms below are the whole reason this is one file with a case statement and
-# not one shared invocation: the models spell "which weights" three incompatible ways,
-# and collapsing them breaks at startup with an error that names nothing relevant.
-case "$MODEL" in
-    smolvla) VENV=$VENV_LEROBOT051; PLAYBOOK=$VLA_ONNX/smolvla; : "${MODE:=expert}"; : "${LR:=1e-4}" ;;
-    # xvla defaults to full: frozen encoders scored 14-22% worse held-out on two recordings
-    # and drove the excavator badly (2026-09-14); full is also X-VLA's own recipe.
-    xvla)    VENV=$VENV_LEROBOT051; PLAYBOOK=$VLA_ONNX/xvla;    : "${MODE:=full}"; : "${LR:=1e-4}" ;;
-    evo1)    VENV=$VENV_LEROBOT061; PLAYBOOK=$VLA_ONNX/evo1;    : "${MODE:=expert}"; : "${LR:=1e-5}" ;;
-    *) die "unknown --model $MODEL (smolvla | xvla | evo1)" ;;
-esac
+VENV=$VENV_LEROBOT051
+PLAYBOOK=$VLA_ONNX/xvla
 PY=$VENV/bin/python
-[ -x "$PY" ] || die "no python in $VENV -- run the playbook's setup.sh first"
+[ -x "$PY" ] || die "no python in $VENV -- run xvla/excavator/setup.sh first"
 
 # --- dataset + camera view -----------------------------------------------------------
 SRC=$DATASET
@@ -207,85 +176,30 @@ fi
 DIR=$OUT/$NAME
 LOG=$OUT/logs/$NAME.log
 
-# --- train-mode -> per-model flags ---------------------------------------------------
-# A mode a model does not have is an error naming the modes it does have. Silently
-# falling back is how you end up with two runs called "full" that trained differently.
-MODE_FLAGS=()
-case "$MODEL:$MODE" in
-    smolvla:expert|smolvla:frozen)
-        # The checkpoint's own defaults: freeze_vision_encoder, train_expert_only,
-        # train_state_proj all true. Passed explicitly so the run records what it did.
-        MODE_FLAGS=(--policy.freeze_vision_encoder=true --policy.train_expert_only=true
-                    --policy.train_state_proj=true) ;;
-    smolvla:full)
-        MODE_FLAGS=(--policy.freeze_vision_encoder=false --policy.train_expert_only=false
-                    --policy.train_state_proj=true) ;;
-    smolvla:lora)
-        # LoRA is triggered by the top-level `peft` config being set, NOT by
-        # --policy.use_peft, which means "pretrained_path is an adapter dir" and would
-        # raise on a fresh fine-tune.
-        MODE_FLAGS=(--peft.method_type=LORA --peft.r=8) ;;
-    xvla:frozen|xvla:full)
-        if [ "$MODE" = full ]; then FV=false; FL=false; else FV=true; FL=true; fi
-        MODE_FLAGS=(--policy.freeze_vision_encoder=$FV --policy.freeze_language_encoder=$FL) ;;
-    xvla:expert)
-        die "--train-mode expert does not exist for xvla.
-   X-VLA has no action-head-only mode: freezing both encoders still trains the full
-   policy transformer and the soft prompts. Use --train-mode full (879M, the default,
-   and what drives the excavator), or --train-mode frozen (311M) for the nearest
-   equivalent -- which scored 14-22% worse and drove badly." ;;
-    xvla:lora|evo1:lora)
-        die "--train-mode lora is only wired for smolvla.
-   LoRA needs target modules and only SmolVLA defines _get_default_peft_targets.
-   For $MODEL you must choose them and pass --peft.target_modules yourself." ;;
-    evo1:expert|evo1:frozen) MODE_FLAGS=(--policy.training_stage=stage1) ;;
-    evo1:full)               MODE_FLAGS=(--policy.training_stage=stage2) ;;
-    *) die "unknown --train-mode $MODE for $MODEL (expert | frozen | full | lora)" ;;
+# --- train-mode ----------------------------------------------------------------------
+# X-VLA has no action-head-only mode: freezing both encoders still trains the full policy
+# transformer and the soft prompts. A mode that does not exist is an error, never a
+# silent fallback -- that is how two runs both called "full" end up training differently.
+case "$MODE" in
+    full)   FV=false; FL=false ;;
+    frozen) FV=true;  FL=true ;;
+    *) die "unknown --train-mode $MODE (full | frozen)" ;;
 esac
+MODE_FLAGS=(--policy.freeze_vision_encoder=$FV --policy.freeze_language_encoder=$FL)
 
 # --- which weights, and the model's own dialect --------------------------------------
-MODEL_FLAGS=()
-case "$MODEL" in
-    smolvla)
-        # load_vlm_weights=true initialises the VLM from the pretrained SmolVLA weights;
-        # false trains the action expert from scratch against a randomly initialised one.
-        MODEL_FLAGS=(--policy.type=smolvla
-                     --policy.pretrained_path="${INIT_FROM:-lerobot/smolvla_base}"
-                     --policy.load_vlm_weights=$VLM_WEIGHTS
-                     --policy.use_amp=true) ;;
-    xvla)
-        # NEVER --policy.type here. draccus would build XVLAConfig from defaults with
-        # florence_config={}, and get_florence_config() dies "vision_config is required"
-        # before training starts, naming nothing that points at this line.
-        CKPT=${INIT_FROM:-$PLAYBOOK/models/xvla-base-excavator}
-        [ -f "$CKPT/model.safetensors" ] || die "no prepared X-VLA checkpoint at $CKPT
+# NEVER --policy.type here. draccus would build XVLAConfig from defaults with
+# florence_config={}, and get_florence_config() dies "vision_config is required" before
+# training starts, naming nothing that points at this line.
+CKPT=${INIT_FROM:-$PLAYBOOK/models/xvla-base-excavator}
+[ -f "$CKPT/model.safetensors" ] || die "no prepared X-VLA checkpoint at $CKPT
    Run xvla/excavator/fetch_checkpoint.sh, then prepare_checkpoint.py."
-        # STATE=MEAN_STD is not optional: xvla-base ships STATE=IDENTITY and X-VLA does
-        # not normalise proprio itself, so without it the joint angles go in as raw
-        # degrees. The restructure dropped this flag; every X-VLA run before it (the
-        # fullft-17500 bundle included) trained with it.
-        MODEL_FLAGS=(--policy.path="$CKPT"
-                     --policy.action_mode=auto
-                     --policy.normalization_mapping='{"VISUAL":"IDENTITY","STATE":"MEAN_STD","ACTION":"MEAN_STD"}'
-                     --policy.dtype=bfloat16) ;;
-    evo1)
-        BASE=$PLAYBOOK/models/InternVL3-1B-hf
-        [ -d "$BASE" ] || die "no InternVL3 base at $BASE -- run evo1/download_base.sh"
-        # EVO1 has never been trained on this data. Its exporter expects
-        # observation.images.image{,2,3} while the excavator records cam1, max_views is
-        # baked into the export and must be decided before training, and its default
-        # normalization is MIN_MAX where the other two land on MEAN_STD. Refuse rather
-        # than emit a command that has never run.
-        die "--model evo1 has no trained excavator path yet.
-   Three things are missing, and none of them are this script's to guess:
-     1. a feature-contract adapter: the exporter wants observation.images.image*,
-        this recording has $(basename "$SRC")'s cam keys
-     2. --policy.max_views must be pinned before training (it is baked into the
-        export; a 1-view bundle cannot serve a 2-view runtime)
-     3. its normalization default is MIN_MAX, not the MEAN_STD the other two use,
-        so an EVO1 run left at defaults is not one-variable against them
-   Build those in evo1/, then this arm is a few lines." ;;
-esac
+# STATE=MEAN_STD is not optional: xvla-base ships STATE=IDENTITY and X-VLA does not
+# normalise proprio itself, so without it the joint angles go in as raw degrees.
+MODEL_FLAGS=(--policy.path="$CKPT"
+             --policy.action_mode=auto
+             --policy.normalization_mapping='{"VISUAL":"IDENTITY","STATE":"MEAN_STD","ACTION":"MEAN_STD"}'
+             --policy.dtype=bfloat16)
 
 # --- assemble ------------------------------------------------------------------------
 CMD=("$VENV/bin/lerobot-train"
@@ -308,21 +222,18 @@ CMD=("$VENV/bin/lerobot-train"
      --save_freq="$SAVE_FREQ"
      --eval_freq=0)
 [ -n "$TRAIN_EPS" ] && CMD+=(--dataset.episodes="$TRAIN_EPS")
-# Both policies default scheduler_decay_steps to 30000 and the scheduler only scales it
-# DOWN to fit a shorter run. Past 30000 the LR sits at its floor for every extra step, so
-# stretch the cosine to the run instead.
-case "$MODEL" in smolvla|xvla)
-    [ "$STEPS" -gt 30000 ] && CMD+=(--policy.scheduler_decay_steps="$STEPS") ;;
-esac
+# scheduler_decay_steps defaults to 30000 and the scheduler only scales it DOWN to fit a
+# shorter run. Past 30000 the LR sits at its floor for every extra step, so stretch the
+# cosine to the run instead.
+[ "$STEPS" -gt 30000 ] && CMD+=(--policy.scheduler_decay_steps="$STEPS")
 [ "$SMOKE" = 1 ] && CMD+=(--save_checkpoint=false)
 CMD+=("${MODEL_FLAGS[@]}" "${MODE_FLAGS[@]}")
 
 # Anything after `--` goes to lerobot-train untouched -- the escape hatch for the long
 # tail of policy knobs that will never all have their own flag here. It may NOT shadow a
 # flag this script derives: a passthrough --policy.chunk_size=30 alongside --chunk 10
-# would train one thing and name the run another, which is the exact invisibility this
-# script exists to remove. The check is against what was actually assembled, so it stays
-# correct as flags are added.
+# would train one thing and name the run another. The check is against what was actually
+# assembled, so it stays correct as flags are added.
 for extra in ${PASSTHROUGH+"${PASSTHROUGH[@]}"}; do
     case "$extra" in
         --*) key=${extra%%=*}
@@ -415,7 +326,7 @@ fi
 rc=$?
 if [ $rc -eq 0 ]; then
     echo "[$(date +%T)] $NAME finished ok -> $DIR"
-    echo "  score it:  $PY $VLA_ONNX/eval/compare.py --sweep $OUT"
+    echo "  score it:  $PY $VLA_ONNX/eval/compare.py --sweep $OUT   (needs held-out episodes)"
 else
     echo "[$(date +%T)] $NAME FAILED (rc=$rc), see $LOG" >&2
     tail -20 "$LOG" >&2

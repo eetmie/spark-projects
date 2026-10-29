@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Export a trained run as a split ONNX bundle, and prove it against the torch checkpoint.
 #
-#   ./run_export.sh --model smolvla --run smolvla/outputs/<sweep>/<run>
-#   ./run_export.sh --model xvla --run xvla/outputs/<sweep>/<run> --step 17500
-#   ./run_export.sh --model smolvla --run <dir> --step last --dest ~/Desktop/my-bundle
+#   ./run_export.sh --run xvla/outputs/<sweep>/<run> --step 17500
+#   ./run_export.sh --run xvla/outputs/<sweep>/<run> --step last --dest ~/bundles/my-bundle
 #
 # Generalises the per-recording chain scripts (chain_export_dry2.sh and friends), which
 # each hardcoded one sweep, one run name and one destination.
@@ -15,7 +14,7 @@
 # curve.json is missing or unreadable this EXPORTS NOTHING and says so -- a bundle
 # silently built from the wrong checkpoint is worse than no bundle.
 #
-# THE EXPORT VENV IS NOT THE TRAINING VENV FOR X-VLA. It trains in .venv-lerobot051 and
+# THE EXPORT VENV IS NOT THE TRAINING VENV. X-VLA trains in .venv-lerobot051 and
 # exports in .venv-lerobot061 (see the environments table in README.md). Getting this
 # backwards produces an import error deep in the exporter rather than at the top.
 set -uo pipefail
@@ -25,7 +24,7 @@ source "$HERE/paths.sh"
 
 die() { echo "!! $*" >&2; exit 2; }
 
-MODEL="" RUN="" STEP=best DEST="" VIEWS="" HOIST=""
+MODEL=xvla RUN="" STEP=best DEST="" VIEWS=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --model) MODEL=$2; shift 2 ;;
@@ -33,35 +32,24 @@ while [ $# -gt 0 ]; do
         --step)  STEP=$2; shift 2 ;;
         --dest)  DEST=$2; shift 2 ;;
         --views) VIEWS=$2; shift 2 ;;
-        --hoist-cross-kv) HOIST=1; shift ;;
         -h|--help)
             sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
             cat <<'USAGE'
 
-  --model M    smolvla | xvla | evo1                                   (required)
+  --model xvla accepted for old command lines; X-VLA is the only model
   --run DIR    a run directory holding checkpoints/                    (required)
   --step S     best (default, from curve.json) | last | a step number
   --dest DIR   bundle destination (default: $VLA_DATASETS/<model>-<sweep>-<run>-<step>)
   --views N    how many camera views the bundle is sized for (default: the checkpoint's)
-  --hoist-cross-kv  SmolVLA: prefill emits the cross-attention layers' expert K/V once per
-               observation instead of decode recomputing them every denoise step (same
-               arithmetic; -2 ms on the Orin). Runtimes that pass prefill outputs to
-               decode inputs by name, as kaivuriprokkis does, need no change.
 USAGE
             exit 0 ;;
         *) die "unknown flag: $1" ;;
     esac
 done
-[ -n "$MODEL" ] || die "--model is required"
+[ "$MODEL" = xvla ] || die "--model $MODEL: only X-VLA is left here (git tag archive/lerobot-playbooks-2026-10-29 has the rest)"
 [ -n "$RUN" ]   || die "--run is required"
 
-case "$MODEL" in
-    # X-VLA and EVO1 export in the 0.6.1 stack; only SmolVLA exports where it trained.
-    smolvla) VENV=$VENV_LEROBOT051; CKPT_FLAG=--model-id;   PARITY=parity_split_vs_torch.py ;;
-    xvla)    VENV=$VENV_LEROBOT061; CKPT_FLAG=--checkpoint; PARITY=parity.py ;;
-    evo1)    VENV=$VENV_LEROBOT061; CKPT_FLAG=--checkpoint; PARITY="" ;;
-    *) die "unknown --model $MODEL (smolvla | xvla | evo1)" ;;
-esac
+VENV=$VENV_LEROBOT061; CKPT_FLAG=--checkpoint; PARITY=parity.py
 PLAYBOOK=$VLA_ONNX/$MODEL
 PY=$VENV/bin/python
 [ -x "$PY" ] || die "no python in $VENV"
@@ -75,6 +63,7 @@ case "$STEP" in
         CURVE=$(dirname "$RUN")/curve.json
         [ -f "$CURVE" ] || die "no $CURVE -- score the sweep first:
      $PY $VLA_ONNX/eval/curve.py --sweep $(dirname "$RUN")
+   Trained with --holdout none? There is nothing to score: pass --step last or a number.
    Exporting nothing: the best checkpoint is read from the eval, never assumed."
         STEP=$("$PY" - "$CURVE" "$(basename "$RUN")" <<'PY'
 import json, sys
@@ -106,10 +95,6 @@ fi
 echo "=== export $MODEL step $STEP -> $DEST  $(date) ==="
 EXPORT_ARGS=("$CKPT_FLAG" "$CKPT" --out-dir "$DEST")
 [ -n "$VIEWS" ] && EXPORT_ARGS+=(--views "$VIEWS")
-if [ -n "$HOIST" ]; then
-    [ "$MODEL" = smolvla ] || die "--hoist-cross-kv is a SmolVLA export option"
-    EXPORT_ARGS+=(--hoist-cross-kv)
-fi
 "$PY" "$PLAYBOOK/export_split_onnx.py" "${EXPORT_ARGS[@]}"
 rc=$?; [ $rc -eq 0 ] || die "export failed (rc=$rc), stopping before parity."
 
@@ -120,7 +105,7 @@ if [ -n "$PARITY" ] && [ -f "$PLAYBOOK/$PARITY" ]; then
     # when that cache was emitted for a different bundle -- correctly, but it used to scroll
     # past inside `| tee` and the export still "succeeded" unverified. Keep the reference
     # with the bundle, and let a refusal or a FAIL stop the script.
-    [ "$MODEL" = xvla ] && PARITY_ARGS+=(--reference "$DEST/parity_reference.npz")
+    PARITY_ARGS+=(--reference "$DEST/parity_reference.npz")
     "$PY" "$PLAYBOOK/$PARITY" "${PARITY_ARGS[@]}" 2>&1 | tee "$DEST/PARITY.txt"
     rc=${PIPESTATUS[0]}
     [ "$rc" -eq 0 ] || die "parity did not pass (rc=$rc), see $DEST/PARITY.txt"

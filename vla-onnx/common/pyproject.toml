@@ -5,9 +5,8 @@ description = "Shared plumbing for the LeRobot VLA -> split ONNX -> Orin Nano pi
 requires-python = ">=3.12"
 
 # Deliberately NO pins on torch/lerobot/transformers. This package is installed into
-# BOTH pipeline environments — the lerobot 0.5.1 / torch 2.12 comparison venv that
-# smolvla and xvla fine-tune in, and the lerobot 0.6.1 / torch 2.11 venv that evo1
-# and the X-VLA export use. Anything version-sensitive belongs in a model playbook,
+# BOTH pipeline environments — the lerobot 0.5.1 / torch 2.12 venv X-VLA fine-tunes in,
+# and the lerobot 0.6.1 / torch 2.11 venv the X-VLA export uses. Anything version-sensitive belongs in a model playbook,
 # not here. `onnx` is imported lazily inside the functions that need it.
 dependencies = []
 

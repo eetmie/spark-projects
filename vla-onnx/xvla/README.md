@@ -1,178 +1,137 @@
 # vla-onnx/xvla — X-VLA-0.9B fine-tune on the DGX Spark (GB10)
 
-The missing half of the X-VLA experiment. The fit question — *can this model run on an 8 GB
-Orin* — was answered first in
-[`notes/fit-on-8gb.md`](notes/fit-on-8gb.md): yes — 12 split TRT engines, 390 ms/chunk,
-5.71 GB peak RSS, parity cosine 1.000000. That work ended on the sentence that defines this
-project:
+Fine-tune `lerobot/xvla-base` on an excavator recording, then export it as a split-ONNX
+bundle for the Orin Nano. Fit on the 8 GB Orin is settled in
+[`notes/fit-on-8gb.md`](notes/fit-on-8gb.md): 12 split TRT engines, 390 ms/chunk, 5.71 GB
+peak RSS. The stock checkpoint cannot drive an excavator (it is a 20-dim `ee6d` arm
+policy), hence this fine-tune.
 
-> `xvla-base` cannot drive the excavator as-is (it is a 20-dim `ee6d` arm policy), so a
-> deployable X-VLA needs a Spark fine-tune first, exactly as SmolVLA did.
-
-This is that fine-tune. The goal is not just a working X-VLA — it is a **fair number
-against SmolVLA on the same excavator data**, so "2x the parameters and 2.6x the memory"
-can be weighed against whatever accuracy it actually buys.
-
-Kept separate from `../smolvla/` deliberately: that side is still moving,
-and neither experiment should be able to break the other.
-
-## What makes the comparison fair
-
-| shared | why it matters |
-|---|---|
-| the same venv (`../smolvla/.venv`) | lerobot 0.5.1, torch 2.12.0+cu130 for both — no version variable smuggled into the result |
-| the same current dataset | recommended first run is `masi_digging_clean`: 181 eps / 103356 frames @30 fps |
-| the same cam1-only view | `datasets/masi_digging_clean_ir`, metadata-only, **symlinked** frames — byte-identical images |
-| the same held-out recordings | the 18 remapped cleaned ids used by the SmolVLA cleaned-data runs |
-| the same chunk length (30) | directly compares with SmolVLA `clean_ir30` and matches the validated X-VLA Orin contract |
-| the same frozen slice | VLM encoders frozen, action head/policy transformer trains |
-| the same metric | `eval/compare.py` disp_err, integrated command error over a fixed wall-clock horizon |
-
-The full 189-episode data, two-camera variants, and the newer dry-sand recording remain
-available as `ir`, `both`, `clean_both`, and `dry_ir` targets. Episode counts are
-read from each dataset at launch. This matters: the original runner hardcoded
-`range(82)` and would silently ignore the 107 episodes appended later.
-
-The eval harness lives in [`../eval/`](../eval/) and is **architecture-agnostic**: it
-loads whatever `policy.type` a checkpoint records via `get_policy_class`, and feeds each
-model only the cameras its own config lists. Runs from different playbooks go in one
-table by naming them:
-
-```bash
-../.venv-lerobot051/bin/python ../eval/compare.py --horizons 0.5 \
-    --ckpt smolvla=../smolvla/outputs/<sweep>/<run>/checkpoints/last \
-    --ckpt xvla=outputs/<sweep>/<run>/checkpoints/last
-```
-
-That prints SmolVLA and X-VLA rows in one table with a `policy` column. Both must have
-held out the same episodes from the same recording, or it refuses rather than blend them
-— which it can check, because each checkpoint records its own split. When the table spans
-more than one architecture `--n-draws` defaults to 4: X-VLA gains ~18.5% from averaging
-flow-matching draws and SmolVLA ~0%, so scoring a mixed table at 1 charges X-VLA for
-sampler variance SmolVLA does not have.
+Training goes through `../run_training.sh`, export through `../run_export.sh`; this
+directory holds the X-VLA-specific parts (checkpoint prep, exporter, parity).
 
 ## Run
 
 ```bash
-bash excavator/setup.sh                   # idempotent install/checkpoint/GPU preflight
+bash excavator/setup.sh                      # idempotent: venv, checkpoint, preflight
 
-# 2 train steps into a disposable dir, to prove the stack before an overnight run.
-../run_training.sh --model xvla --dataset <recording> --cameras cam1 --smoke
+../run_training.sh --dataset <recording> --cameras cam1,cam2 --smoke   # 2 steps
 
-# A real run: chunk 30 predicted, 10 executed, 30k steps, frozen encoders.
-setsid nohup ../run_training.sh --model xvla --dataset <recording> --cameras cam1 \
-    --policy.chunk_size 30 --policy.n_action_steps 10 --steps 30000 \
-    --train-mode frozen > outputs/xvla-run.log 2>&1 &
+../run_training.sh --dataset <recording> --cameras cam1,cam2 \
+    --chunk 30 --execute 10 --steps 20000
 ```
 
-`--train-mode full` unfreezes both encoders (879 M trainable against 311 M). That is the
-recipe that beat the frozen one by ~14%, and it now goes into the run directory name
-instead of surviving only as a directory string someone typed.
+`<recording>` is a name under `$VLA_DATASETS` (default `~/Desktop`) or a full path.
+`--train-mode` defaults to `full` (879 M trainable); `frozen` (311 M) scored 14-22 % worse
+held-out on two recordings and drove the machine badly. `--dry-run` prints the resolved
+`lerobot-train` command.
 
-The base checkpoint is pinned to Hub revision
-`cdb7964e4fe842935d671bfab5a5ebe00a96648c` and verified with `hf cache verify`.
-It is fetched with curl, not `snapshot_download`: the latter stalled
-twice partway through the safetensors here — process alive, file not growing, no exception,
-so its own retry never fired. `curl --speed-limit/--speed-time` turns a stall into an error
-that `--retry` can act on, and `-C -` resumes. ~9 MB/s vs ~4 MB/s before it hung.
+### Small dataset: train on everything
 
-**Measure throughput before committing to a step budget.** X-VLA is 879.7 M params against
-SmolVLA's 450 M, and its hot loop has no KV cache. On GB10 the SmolVLA runs measured
-0.507 s/step cold and **0.630 s/step heat-soaked** (batch 32, chunk 50, frozen vision) —
-the GPU settles around 79 °C and 2457/3003 MHz under sustained load, so always size an
-overnight run from the heat-soaked figure, not a cold probe. The old X-VLA FP32 probe
-measured **1.823 s/step** at batch 32 / chunk 50. The maintained model card recommends
-bfloat16; that is now the runner default. A 50-step batch-32 / chunk-30 probe measured
-**1.22–1.26 s/step** after warm-up, putting 30k steps at about 10.4 hours before allowing
-for long-run thermal drift:
+`--holdout` defaults to `every10@5` (episodes 5, 15, 25, … held out). Pass `--holdout none`
+to train on all episodes:
 
 ```bash
-../run_training.sh --model xvla --dataset <recording> --cameras cam1 \
-    --policy.chunk_size 30 --steps 250 --out outputs/bf16-probe
-grep -oE "updt_s:[0-9.]+" outputs/bf16-probe/logs/*.log | tail
+../run_training.sh --dataset <recording> --cameras cam1,cam2 \
+    --chunk 30 --execute 10 --steps 20000 --holdout none
 ```
 
-## The stock checkpoint cannot train on this dataset unmodified
+Without held-out episodes there is no curve, so there is no "best" step:
+`eval/curve.py` and `eval/compare.py` have nothing to score, and `run_export.sh`'s default
+`--step best` exports nothing (by design). Pick the step yourself:
 
-`lerobot/xvla-base`'s config.json declares the input contract of the robots it was
-pretrained on — `observation.images.image / image2 / image3` and `observation.state (8,)`.
-`make_policy` only fills `input_features` from the dataset **when the config leaves it
-empty**, so with `--policy.path` that stock contract survives and training dies with:
-
-```
-ValueError: Feature mismatch between dataset/environment and policy config.
-- Missing features: ['observation.images.image', 'observation.images.image2', 'observation.images.image3']
-- Extra features: ['observation.images.cam1']
+```bash
+../run_export.sh --run xvla/outputs/<sweep>/<run> --step last      # or --step 17500
 ```
 
-The error suggests `--rename_map`, and that does make it start — but it is the **wrong
-fix**: `make_policy` skips `validate_visual_features_consistency` entirely when a rename_map
-is present, and the normalizer is then built with `features=policy.config.input_features`
-(state shape `(8,)`) against `stats=dataset.meta.stats` (state shape `(3,)`). Mismatched
-shapes, no error. `--policy.input_features={}` does not work either — draccus *merges* the
-CLI dict into the one from config.json rather than replacing it.
+The export parity gate compares the bundle against the torch checkpoint and does not need
+held-out data. For reference, the bundle that drove well on the machine was step 17500 of a
+20000-step full fine-tune.
 
-`excavator/prepare_checkpoint.py` does the honest thing: derive a checkpoint dir with
-`input_features` emptied (weights symlinked, not copied), so the dataset defines the contract.
-Nothing about the weights depends on the emptied keys — `dim_proprio = max_state_dim` (20)
-and `_prepare_state` pads our 3-dim state to it, so the declared `(8,)` only ever fed the
-normalizer. `num_image_views` stays 3 and `_prepare_images` zero-pads our 1-2 real views to
-3 with `mask=False`; `forward_vlm` encodes valid views only, so the padding is free — the
-same shape as the Orin runtime's `--valid-views 1`.
+### Two cameras
+
+Camera keys and their order come from the checkpoint's `observation.images.*`; the bundle
+records them and the Orin runtime refuses a mismatch. The exporter sizes the vision engine
+to the checkpoint's camera count (`--views` overrides), so a 2-camera fine-tune exports at 2
+views. A 1-view bundle cannot serve a 2-view runtime, and the reverse. No 2-camera X-VLA
+bundle has been exported or run on the Orin yet; treat the first one as the test.
+
+## The stock checkpoint cannot train on this data unmodified
+
+`lerobot/xvla-base`'s config declares the robots it was pretrained on:
+`observation.images.image{,2,3}` and `observation.state (8,)`. `make_policy` only takes
+`input_features` from the dataset when the config leaves them empty, so training dies with
+a feature mismatch. `--rename_map` suppresses the error but is the wrong fix: it also skips
+the consistency check and builds the normalizer with state shape `(8,)` against dataset
+stats of shape `(3,)`, silently.
+
+`excavator/prepare_checkpoint.py` derives `models/xvla-base-excavator` from the base: same
+weights (symlinked), `input_features` emptied, so the dataset defines the contract. Nothing
+in the weights depends on the emptied keys: state is padded to `max_state_dim` (20), and
+`num_image_views` stays 3 with unused views zero-padded and masked.
 
 ## Settings that are not X-VLA's defaults
 
-All four are argued in the xvla arm of `../run_training.sh`. Short version:
+All argued in the `xvla` arm of `../run_training.sh`:
 
-- **`action_mode=auto`** — the default `ee6d` is a 20-dim arm space the excavator does not
-  have. `auto` detects real_dim=4 from the dataset, pads to 20 so the pretrained head
-  loads, and computes loss on the real 4 only.
-- **`STATE=MEAN_STD`** — read the *checkpoint*, not the class defaults: XVLAConfig's
-  dataclass says IDENTITY for all three, but `lerobot/xvla-base` actually ships
-  `{STATE: IDENTITY, ACTION: MEAN_STD, VISUAL: IDENTITY}`. Only STATE needs changing —
-  X-VLA does not normalize proprio internally and our state is joint angles in degrees
-  (−114…134). **ACTION stays MEAN_STD**: that is what the pretrained head was trained with
-  *and* what SmolVLA uses, so after the override both architectures normalize identically.
-- **`dtype=bfloat16`** — this is the maintained X-VLA model card's training setting and
-  the native low-precision format on GB10. The earlier FP32 probe remains a baseline.
-- **`chunk_size=30` for the queued first run** — the base checkpoint and validated Orin
-  runtime both use 30, and SmolVLA already has an otherwise-matched cleaned-IR chunk-30
-  run. `--policy.chunk_size` remains free; use 50 only for a chunk-50 comparison.
-- **VLM encoders frozen** — matches the config's own documented intent (its literal
-  defaults disagree with its docstring) and the SmolVLA recipe.
+- **`action_mode=auto`** — the default `ee6d` is a 20-dim arm space. `auto` reads the
+  dataset's real action dim, pads to 20 so the pretrained head loads, and computes loss on
+  the real dims only.
+- **`STATE=MEAN_STD`** — `xvla-base` ships `STATE=IDENTITY` and X-VLA does not normalize
+  proprio itself, so joint angles in degrees would go in raw. ACTION stays `MEAN_STD`, which
+  is what the pretrained head was trained with.
+- **`dtype=bfloat16`** — the model card's setting; native on GB10.
+- **`chunk_size=30`** — what the base checkpoint and the Orin runtime use. Chunk length is
+  part of the deployment contract (it sets the denoise sequence length and X-VLA cannot
+  KV-cache across denoise steps), so re-measure latency before quoting a replan rate at any
+  other value.
+- **`domain_id=0`** — matches the exporter's `--domain-id 0`.
 
-`domain_id` stays 0, matching the exporter's `--domain-id 0`.
+## Throughput
 
-## Deployment note
+Size a run from a measurement, not from this table. On GB10, X-VLA bf16 at batch 32 /
+chunk 30 measured 1.22-1.26 s/step on a single camera; the GPU heat-soaks to ~79 °C and
+~2457/3003 MHz under sustained load, so use a heat-soaked figure for overnight runs. More
+cameras mean more vision tokens; probe your own configuration:
 
-`num_image_views` auto-resolves to the camera count and only sizes a runtime buffer — no
-parameter shapes depend on it, so 1- and 2-camera fine-tunes both load the 3-view base
-checkpoint cleanly. But two deployment gaps are open:
+```bash
+../run_training.sh --dataset <recording> --cameras cam1,cam2 \
+    --chunk 30 --steps 250 --holdout none --out outputs/probe
+grep -oE "updt_s:[0-9.]+" outputs/probe/logs/*.log | tail
+```
 
-1. **A 2-camera model has no deploy path on either architecture.** SmolVLA's exporter and
-   Orin runtime are single-camera end to end (see the SmolVLA project notes); X-VLA's
-   split export was made with `--valid-views 1`.
-2. **Chunk length is part of the deployment contract.** The Orin latency numbers were
-   measured at 30 actions/chunk. Any other value changes the denoise sequence length, and
-   X-VLA cannot KV-cache across denoising steps, so re-measure before quoting a replan rate.
+Epochs per run: `steps × batch ÷ frames`. 20000 × 32 on the 61,777-frame dual-camera
+recording is about 10 epochs.
+
+## Scoring (needs held-out episodes)
+
+```bash
+../.venv-lerobot051/bin/python ../eval/compare.py --horizons 0.5 --ckpt xvla=<run>/checkpoints/last
+../.venv-lerobot051/bin/python ../eval/curve.py --sweep outputs/<sweep>
+```
+
+The eval harness is model-agnostic and reads the split from each checkpoint's own
+`train_config.json`. In a table with more than one architecture `--n-draws` defaults to 4:
+X-VLA gains ~18.5 % from averaging flow-matching draws and SmolVLA ~0 %, so scoring at 1
+draw would charge X-VLA for sampler variance SmolVLA does not have.
+
+## Base checkpoint
+
+Pinned to Hub revision `cdb7964e4fe842935d671bfab5a5ebe00a96648c`, verified with
+`hf cache verify`, and fetched with curl rather than `snapshot_download`, which stalled
+silently twice partway through the safetensors (process alive, file not growing, no
+exception). `curl --speed-limit/--speed-time` turns a stall into an error that `--retry`
+can act on.
+
+## Environments
+
+Trains in `.venv-lerobot051` (lerobot 0.5.1), exports in `.venv-lerobot061` (0.6.1);
+`run_export.sh` picks the right one. They cannot be merged — see `../README.md`.
 
 ## Status
 
-- 2026-08-19 — pipeline written and config-validated end to end against `masi_digging`:
-  `action_mode=auto` resolves real_dim 4 → model dim 20, both cameras detected, state 3-dim,
-  `normalization_mapping` override parses, `XVLAPolicy` loads through `get_policy_class`.
-  Config load verified through the real `--policy.path` code path: action_mode ee6d→auto,
-  chunk 30→50, freeze (False,False)→(True,True), Florence2Config builds.
-  `lerobot/xvla-base` (3.52 GB) fetched to `models/xvla-base/`.
-  Smoke-tested end to end (2 steps, batch 2): weights load, **879.48 M total / 310.98 M
-  learnable** (frozen encoders confirmed), 74-episode split, checkpoint written. The saved
-  train_config records action_mode=auto, chunk 50/50, STATE+ACTION MEAN_STD, VISUAL IDENTITY,
-  input_features `[observation.state, observation.images.cam1]`, action shape `[4]`.
-  The subsequent 250-step FP32 throughput probe completed successfully at 1.823 s/step,
-  produced a valid checkpoint, and was exported through the split deployment contract.
-- 2026-08-31 — workstation stack hardened for a real run: Hub revision pinned and
-  checksummed; setup/preflight/smoke/queue entry points added; bfloat16 training enabled;
-  the current 189/181/62-episode datasets supported; episode splits made dynamic; cleaned
-  held-outs mapped to the same source recordings as SmolVLA; checkpoint disk budget checked;
-  and resume now overrides the old probe's saved `steps=250` instead of silently exiting.
-  **No long X-VLA fine-tune has been launched yet.**
+- Full fine-tune is the deployed recipe; X-VLA drives the excavator on single-camera data
+  and on the new-IMU recordings.
+- Bundle contract (`bundle_contract.py`) is vendored byte-for-byte into
+  `kaivuriprokkis-python` (`runtime/vendor/xvla_bundle_contract.py`, SHA recorded in its header).
+  Re-sync it there when this file changes.
+- Open: a 2-camera export and Orin run (above).

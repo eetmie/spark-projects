@@ -1,8 +1,7 @@
-# EVO1 / LeRobot host-side bring-up on NVIDIA DGX Spark (GB10, aarch64, CUDA 13).
-# Tested with Python 3.12. Install through setup.sh so the CUDA 13 PyTorch index is used.
-
-# EVO1 first appears in LeRobot 0.6.0. Use 0.6.1: it includes the EVO1 normalization-
-# processor repair and correct FlashAttention availability check from the patch release.
+# X-VLA export environment (lerobot 0.6.1) on the DGX Spark (GB10, aarch64, CUDA 13).
+# Tested with Python 3.12. Install through excavator/setup.sh so the CUDA 13 PyTorch
+# index is used. This file came from the EVO1 playbook, hence the `evo1` extra; it is kept
+# unchanged so a rebuild matches the existing .venv-lerobot061.
 lerobot[training,evo1]==0.6.1
 
 # LeRobot 0.6.1 requires torch >=2.7,<2.12 and torchvision >=0.22,<0.27.

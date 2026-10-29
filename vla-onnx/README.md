@@ -1,125 +1,46 @@
 # vla-onnx
 
-One pipeline, three models. Fine-tune a LeRobot VLA on the DGX Spark, cut it into split
-ONNX graphs that a Jetson Orin Nano can actually build TensorRT engines for, verify the
-export against PyTorch, and ship a bundle.
-
-```
-checkpoint ──► fine-tune ──► split export ──► mixed FP16 ──► manifest ──► parity ──► bundle
-               (Spark)       (Spark)          (Spark)        (Spark)      (Spark)     └─► ~/bundles
-```
-
-Running the bundle is somebody else's job: base-model fit and benchmarks live in
-[jetson-orin-nano-vla](https://github.com/eetmie/jetson-orin-nano-vla), the robot lives in
+Excavator VLAs on the DGX Spark: native recordings → LeRobot datasets → fine-tune → split
+ONNX bundles for the Orin Nano. Orin fit and benchmarks of the base models live in
+[jetson-orin-nano-vla](https://github.com/eetmie/jetson-orin-nano-vla); the robot is
 `kaivuriprokkis`. This side stops at a parity-checked bundle.
 
-| playbook | model | state |
-|---|---|---|
-| [`smolvla/`](smolvla/) | SmolVLA 450 M | fine-tuned, deployed |
-| [`xvla/`](xvla/) | X-VLA 0.9 B | fine-tuned, deployed |
-| [`evo1/`](evo1/) | EVO1 775 M | export + Orin bootstrap proven; **no trained checkpoint yet** |
-| [`kaivuriprokkis/`](kaivuriprokkis/) | π0.5 3.3 B (OpenPI) | exporter for `kaivuri-inference`, RTC-ready; smoke checkpoint only |
-
-## Running a fine-tune
-
-One entry point for all three models. Everything you vary is a flag; nothing is an
-environment variable and nothing is a bare word matched inside a case statement.
-
-```bash
-./run_training.sh --model smolvla --dataset masi_digging_dry_2 --cameras cam1 \
-                  --train-mode expert --chunk 10 --steps 30000
-
-./run_training.sh --model xvla --dataset masi_digging_dry_2 --cameras cam1 \
-                  --chunk 30 --execute 10 --train-mode full --steps 20000
-
-./run_training.sh --model smolvla --dataset <recording> --cameras cam1 --dry-run
-```
-
-`--dry-run` prints the resolved `lerobot-train` command and exits; `--smoke` runs two
-steps into a disposable directory; `--help` lists every flag. `--after-pid N` waits for a
-running job to exit before starting (never `pgrep -f`, which matches the shell that is
-tailing the log).
-
-**`--train-mode` is explicit because it used to be invisible.** Every SmolVLA excavator
-run trained 99,880,992 of 450,046,176 parameters — the checkpoint's config defaults — and
-no script said so. The mode now goes into the run directory name, so an artefact says what
-it is rather than what someone happened to type.
-
-| mode | smolvla | xvla | evo1 |
+| project | model | runtime on the robot | state |
 |---|---|---|---|
-| `expert` | vision + VLM frozen, action expert only | *refused* — X-VLA has no such mode | `training_stage=stage1` |
-| `frozen` | = `expert` | both encoders frozen (311 M) | = `stage1` |
-| `full` | nothing frozen (~450 M) | nothing frozen (879 M) | `training_stage=stage2` |
-| `lora` | `--peft.method_type=LORA` | *refused* | *refused* |
-| **default** | `expert` | `full` | `expert` |
+| [`xvla/`](xvla/) | X-VLA 0.9 B (LeRobot) | `kaivuriprokkis` branch `python`, the backup stack | live; fine-tune with `run_training.sh`, export with `run_export.sh` |
+| [`groot/`](groot/) | GR00T N1.7 3 B | `kaivuriprokkis` native C++ | live; training-time RTC, `groot/excavator/` |
+| [`pi05/`](pi05/) | π0.5 3.3 B (OpenPI) | `kaivuriprokkis` native C++ | live; training-time RTC |
+| [`kaivuriprokkis/`](kaivuriprokkis/) | π0.5 | native C++ | the π0.5 robot-bundle exporter, plus the RTC training docs shared by GR00T and π0.5. Start at [`RTC_TRAINING.md`](kaivuriprokkis/RTC_TRAINING.md) |
 
-X-VLA defaults to `full`. `frozen` scored 14-22% worse held-out on two excavator
-recordings, and the frozen new-IMU bundle drove the machine badly where `full` drove well.
+SmolVLA and EVO1 were removed on 2026-10-29. `git checkout archive/lerobot-playbooks-2026-10-29`
+has them.
 
-A mode a model does not have is an error naming the modes it does have, never a silent
-fallback. `--model evo1` currently refuses outright: it has no trained excavator path, and
-the message says which three pieces are missing.
-
-**Where the weights start.** `--init-from <checkpoint>` replaces the model's base weights
-(SmolVLA's `lerobot/smolvla_base`, X-VLA's prepared `models/xvla-base-excavator`) — that is
-how you continue from a fine-tune rather than from the base. `--no-vlm-weights` is the
-SmolVLA-only case of training the action expert against a randomly initialised VLM.
-
-**The escape hatch.** Everything after `--` is appended to `lerobot-train` verbatim:
-
-```bash
-./run_training.sh --model smolvla --dataset <rec> --cameras cam1 -- --policy.num_steps=5
+```
+recording ─► dataset view ─► fine-tune ─► split export ─► mixed FP16 ─► parity ─► bundle
+ (robot)     (vla_common)     (Spark)       (Spark)        (Spark)      (Spark)   └─► ~/bundles
 ```
 
-There is a long tail of policy knobs that will never all deserve their own flag, and this
-is where they go. One rule: a passthrough flag may **not** shadow one the script derives.
-`-- --policy.chunk_size=30` alongside `--chunk 10` is refused, because it would train one
-thing and name the run directory another — the invisibility this script exists to remove.
-The check is against the command actually assembled, so it stays correct as flags are added.
-
-## Scoring a run
+## X-VLA
 
 ```bash
-eval/compare.py --sweep smolvla/outputs/<sweep> --horizons 0.17 0.3
-eval/compare.py --ckpt <checkpoint> --only-task "move rock to container"
-eval/curve.py   --sweep smolvla/outputs/<sweep> --horizon 0.17
+bash xvla/excavator/setup.sh        # both venvs, base checkpoint, preflight
+./run_training.sh --dataset <recording> --cameras cam1,cam2 --chunk 30 --execute 10 --steps 20000
+./run_training.sh --dataset <recording> --cameras cam1,cam2 --holdout none      # small dataset: train on all
+./run_export.sh  --run xvla/outputs/<sweep>/<run> --step last
+./ship_bundle.sh ~/bundles/<bundle> orin
 ```
 
-The source recording, the held-out episodes and the per-episode instructions are read from
-the checkpoint's own `train_config.json` — held-out is the complement of
-`dataset.episodes`, so it cannot disagree with what the run actually trained on. There is
-no preset table any more; see [`smolvla/notes/retired-presets.md`](smolvla/notes/retired-presets.md)
-for the one it replaced and what each field of it cost.
+Details, the settings that are not X-VLA's defaults, and scoring: [`xvla/README.md`](xvla/README.md).
+`eval/` scores held-out episodes (`compare.py`, `curve.py`) and is model-agnostic.
 
-`eval/` is model-agnostic — it loads whatever architecture a checkpoint records — so
-scoring a SmolVLA run against an X-VLA one is `--ckpt smolvla=<path> --ckpt xvla=<path>`
-rather than one playbook reaching into another's tree. Runs in one table must resolve to
-the same recording and the same held-out set, or it refuses rather than blend them.
+## Shared: `common/` (`vla_common`)
 
-## Exporting a bundle
+Bundle and dataset plumbing that every project uses: hash a bundle, validate a traced graph,
+record provenance, convert weights to mixed FP16, read a safetensors header, reshape a
+LeRobot dataset. What is **not** shared is how a model gets cut into graphs; that follows the
+architecture and stays in each project.
 
-```bash
-./run_export.sh --model smolvla --run smolvla/outputs/<sweep>/<run>          # best step
-./run_export.sh --model xvla --run xvla/outputs/<sweep>/<run> --step 17500
-```
-
-`--step best` is the default and reads the minimum held-out error from the sweep's
-`curve.json`. If that file is missing it exports **nothing** — the peak is not the last
-step on this project's own history (kaivuri peaked at 20000 of 30000, the first dry run at
-25000 of 50000), and a bundle built from the wrong checkpoint is worse than no bundle.
-Note that X-VLA *exports* in `.venv-lerobot061` while it *trains* in `.venv-lerobot051`;
-`run_export.sh` picks the right one.
-
-SmolVLA exports write LeRobot's RoPE by concatenation and the patch embedding as
-patchify + MatMul: the same arithmetic as the slice-assign RoPE and the stride-16 conv
-(split parity unchanged, max 1.5e-6 against torch), but TensorRT fuses them instead of
-running unfused scatters and a slow conv kernel (−7.5 ms and −0.8 ms per inference on
-the Orin Nano). `--hoist-cross-kv` additionally has prefill emit the cross-attention
-layers' expert K/V once per observation instead of decode re-projecting the fixed
-prefix every step (−2 ms); a runtime that feeds prefill outputs to decode inputs by
-name, as kaivuriprokkis does, runs it unchanged.
-
-Bundle tools in `vla_common` (from the Orin optimization work in
+Bundle tools (from the Orin optimization work in
 [jetson-orin-nano-vla](https://github.com/eetmie/jetson-orin-nano-vla/blob/main/docs/07-optimization-playbook.md)):
 
 | | |
@@ -129,84 +50,49 @@ Bundle tools in `vla_common` (from the Orin optimization work in
 | `python -m vla_common.half_boundary --bundle B --names REGEX` | switches those tensors to FP16 in an existing bundle; refuses anything not exact |
 | `python -m vla_common.fp32_accumulate --bundle B --graphs ...` | every FP16 MatMul as Cast(FP32) → MatMul → Cast(FP16), which TensorRT runs FP32-accumulating (on the Orin: +1–3 % latency, 30–45 % lower action error) |
 
-## What is shared, and what is deliberately not
+The FP16 recipe in `vla_common/fp16_weights.py` is a hard-won constant, not a default: a
+blanket cast overflowed a vision tower here (cosine 0.805), so `LayerNormalization` and
+`Softmax` stay FP32.
 
-[`common/`](common/) (`vla_common`) holds what all three do *identically*: hash a bundle,
-validate a traced graph, record provenance, convert weights to mixed FP16, read a
-safetensors header, reshape a LeRobot dataset, and the bundle tools above.
+## Datasets: views and variants
 
-What is **not** shared is how a model gets cut into graphs. `_build_wrappers()` is ~200
-lines in each playbook and about 5% similar between them, because the cut follows the
-architecture — SmolVLA's VLM + expert prefill/decode, X-VLA's DaViT + BART + denoiser,
-EVO1's InternVL. That is the actual content of an exporter, and merging it would mean
-one file with three unrelated halves. The pipeline is shared; the models are not.
-
-The FP16 recipe in `vla_common/fp16_weights.py` is a hard-won constant, not a default:
-a blanket cast overflowed SmolVLA's vision tower here (cosine 0.805), so
-`LayerNormalization` and `Softmax` stay FP32.
-
-## Views
-
-All three exporters take `--views N` — how many camera views the bundle is sized for.
-Nothing in the pipeline assumes a camera count, a camera name, or infrared: camera keys
-are discovered from the checkpoint's `observation.images.*`, and `vla_common` contains no
-camera assumptions at all. Camera names appear only where you type them, on
-`run_training.sh --cameras`.
-
-`--views` is baked into the graphs, not read at runtime, so **a bundle exported at 1 view
-cannot serve a 2-view runtime.** For SmolVLA it sets a static prefix length (1 view = 113
-tokens, 2 = 177); for X-VLA the static batch of the vision engine; for EVO1 the vision
-graph's static view count. The old per-model spellings — `--cam-slots`, `--valid-views`,
-`--max-views` — still work as aliases.
-
-Training on a camera subset needs a *view* of the recording, because `lerobot-train` has
-no camera flag: every `observation.images.*` in `meta/info.json` becomes a policy input.
-`run_training.sh --cameras` builds and freshens that view for you; the pieces are:
+`lerobot-train` has no camera flag: every `observation.images.*` in `meta/info.json` becomes
+a policy input. `run_training.sh --cameras` therefore builds a **view** of the recording
+(symlinked `data/` and the kept videos, copied `meta/`) and refreshes it when the source
+grows:
 
 ```bash
-python -m vla_common.dataset.view --src <recording> --cameras cam1   # resolve, build if needed
+python -m vla_common.dataset.view --src <recording> --cameras cam1        # resolve, build if needed
 python -m vla_common.dataset.camera_variant --src <rec> --dst <view> --keep cam1   # the builder
 ```
 
-Views live in `datasets/` (shared, not owned by one playbook) and are named from what they
-are — `masi_digging_dry_2__cam1`. A view symlinks `data/` and the kept videos but **copies**
-`meta/`, so a recording that grows leaves the view describing the old episode count while
-new frames appear through the symlink. `view.py` stamps each view with the source
-fingerprint and compares: a grown source is rebuilt automatically, a *shrunk* one is
-refused, because dropping episodes renumbers the survivors and makes every split derived
-from an older checkpoint a lie.
+Views live in `datasets/` and are named from what they are (`masi_digging_sand_mix__cam1`).
+A grown source is rebuilt automatically; a *shrunk* one is refused, because dropping
+episodes renumbers the survivors and invalidates every split derived from an older
+checkpoint. Asking for all cameras uses the recording itself, with no view.
 
-Proprio channels have the same problem and a different answer. `observation.state` goes to
-the policy whole, so a sensor that should not be an input has to leave the dataset:
+`observation.state` goes to the policy whole, so a channel that should not be an input has to
+leave the dataset. That produces a **recording**, not a view, and belongs next to its source:
 
 ```bash
 python -m vla_common.dataset.state_variant --src <rec> --dst <rec>_nogyro --drop slew
 ```
 
-That produces a **recording**, not a view — it rewrites `data/` and belongs next to its
-source under `$VLA_DATASETS`. Slew is the standing case: its yaw has no tare, so the
-number means something different in each session, and dropping it is what makes the swing
-camera-derived. The masi recordings already ship `[lift, tilt, scoop]` for that reason;
-`komatsu_flipcone_nogyro` is the komatsu set brought to the same contract. `action` and
-`feedback.*` keep every channel — the machine is still commanded to slew, and `feedback.*`
-never reaches the policy.
+Slew has no tare, so its yaw means something different each session; the masi recordings
+already ship `[lift, tilt, scoop]`. `action` and `feedback.*` keep every channel.
 
-## Two environments, and why they cannot be one
+## Environments
 
 | env | lerobot | torch | used by |
 |---|---|---|---|
-| `.venv-lerobot051` | 0.5.1 | 2.12.0+cu130 | smolvla fine-tune, **xvla fine-tune** |
-| `.venv-lerobot061` | 0.6.1 | 2.11.0+cu130 | evo1 everything, **xvla export** |
+| `.venv-lerobot051` | 0.5.1 | 2.12.0+cu130 | X-VLA fine-tune |
+| `.venv-lerobot061` | 0.6.1 | 2.11.0+cu130 | X-VLA export |
 
-lerobot 0.6.1 requires `torch>=2.7,<2.12`; the 0.5.1 stack pins 2.12.0. They are mutually
-exclusive, so this is two venvs on purpose and not a cleanup that was missed.
-
-SmolVLA and X-VLA fine-tune in the *same* venv deliberately — an identical stack is what
-makes "X-VLA is ~20% behind SmolVLA on this data" a statement about the models rather
-than about two dependency trees.
-
-`vla_common` is installed into both (`pip install -e common`), which is why it carries no
-torch or lerobot pin and imports nothing version-sensitive at module scope.
+lerobot 0.6.1 requires `torch>=2.7,<2.12` while the 0.5.1 stack pins 2.12.0, so these are two
+venvs on purpose. `xvla/excavator/setup.sh` builds both from `xvla/requirements.txt` and
+`xvla/requirements-export.txt`. `vla_common` is installed into both (`pip install -e common`),
+which is why it carries no torch or lerobot pin. GR00T and π0.5 have their own venvs
+(`groot/.venv-groot17`, `pi05/third_party/openpi/.venv`).
 
 ## Paths
 
@@ -220,12 +106,4 @@ imports `vla_common.paths`. Both resolve from their own location and honour over
 | `VLA_BUNDLES` | `~/bundles` | finished bundles, staged for `ship_bundle.sh` |
 | `VENV_LEROBOT051` / `VENV_LEROBOT061` | as above | the two environments |
 
-This matters because the tree has already been renamed twice, and each time a crop of
-absolute paths went stale silently — a script would still run, and write where nobody
-was reading.
-
-## Not in git
-
-`models/`, `outputs/`, `exports/`, `datasets/`, `.venv-*`. Checkpoints and exports are
-regenerable from a recipe plus a checkpoint; the recorded datasets are not regenerable at
-all and live outside the repo under `VLA_DATASETS`.
+A recording elsewhere (for example `~/datasets/masi_dual_camera`) is passed as a full path.

@@ -8,15 +8,23 @@ source "$HERE/../../paths.sh"
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
-SMOL=$(cd "$ROOT/../smolvla" && pwd)
-VENV_ROOT=$VENV_LEROBOT051
-VENV=$VENV_ROOT/bin
+VENV=$VENV_LEROBOT051/bin
 
+# Two environments that cannot be merged: lerobot 0.5.1 / torch 2.12 trains, lerobot
+# 0.6.1 / torch 2.11 exports (it requires torch < 2.12).
 if [ ! -x "$VENV/python" ]; then
-    echo "creating the shared, comparison-pinned LeRobot environment at $VENV_ROOT"
-    python3 -m venv "$VENV_ROOT"
+    echo "creating the training environment at $VENV_LEROBOT051"
+    python3 -m venv "$VENV_LEROBOT051"
     "$VENV/python" -m pip install --upgrade pip
-    "$VENV/python" -m pip install -r "$SMOL/requirements.txt" \
+    "$VENV/python" -m pip install -r "$ROOT/requirements.txt" \
+        --extra-index-url https://download.pytorch.org/whl/cu130
+fi
+
+if [ ! -x "$VENV_LEROBOT061/bin/python" ]; then
+    echo "creating the export environment at $VENV_LEROBOT061"
+    python3 -m venv "$VENV_LEROBOT061"
+    "$VENV_LEROBOT061/bin/python" -m pip install --upgrade pip "setuptools<82" wheel
+    "$VENV_LEROBOT061/bin/python" -m pip install -r "$ROOT/requirements-export.txt" \
         --extra-index-url https://download.pytorch.org/whl/cu130
 fi
 
@@ -31,4 +39,4 @@ fi
 "$VENV/python" "$HERE/preflight.py" "$@"
 echo
 echo "X-VLA fine-tuning stack is ready. Smoke test:"
-echo "  $VLA_ONNX/run_training.sh --model xvla --dataset <recording> --cameras cam1 --smoke"
+echo "  $VLA_ONNX/run_training.sh --dataset <recording> --cameras cam1 --smoke"

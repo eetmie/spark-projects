@@ -23,7 +23,8 @@ See `pi05-spark-inference/notes/findings.md` and `RUNBOOK.md`.
 Active. Native recordings → LeRobot datasets (`common/vla_common/dataset`), GR00T N1.7 and
 pi0.5 (OpenPI) fine-tunes with training-time RTC, bundles for kaivuriprokkis on the Orin.
 Start at [`vla-onnx/kaivuriprokkis/RTC_TRAINING.md`](vla-onnx/kaivuriprokkis/RTC_TRAINING.md).
-The SmolVLA / X-VLA / EVO1 playbooks are the older LeRobot path; Orin benchmarks live in
+`xvla/` is the LeRobot path kept for the Python-side backup stack. SmolVLA and EVO1 were
+removed (tag `archive/lerobot-playbooks-2026-10-29`); Orin benchmarks live in
 [jetson-orin-nano-vla](https://github.com/eetmie/jetson-orin-nano-vla).
 
 

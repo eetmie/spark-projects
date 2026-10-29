@@ -42,7 +42,7 @@ third_party/
 3dgrut/
 
 # Note: `name/` patterns skip symlinks. Data dirs symlinked to the external drive
-# need a slash-less pattern in their playbook .gitignore (groot, kaivuriprokkis, pi05, evo1).
+# need a slash-less pattern in their playbook .gitignore (groot, kaivuriprokkis, pi05).
 
 # Misc
 *.log
