@@ -342,9 +342,11 @@ Each changes one thing against A0 = `digging640_rtc12` (head-only, q01/q99 actio
   `runs/to_board.sh NAME` rsyncs it against the RTC bundle and runs board parity. Both are local
   (runs/ is ignored).
 
-**A1 result (board, 2026-10-29): keep q01/q99.** Parity passes (249.5 ms p50, prefix exact). Three
-A0 and three A1 sand drives (~3 min model time each) look the same to the operator, except that
-**A1 slews worse: it overshoots the container on CCW swings while digging.** The logs agree. The
+**A1 result (board, 2026-10-29): inconclusive, deferred; q01/q99 stays the default.** Parity
+passes (249.5 ms p50, prefix exact). Timed drives with B = success marker: A0 3.7 and 3.2
+successes/min (12 in 194 s, 5 in 94 s), A1 3.75/min (13 in 208 s). That is within run-to-run
+spread; drive-to-drive model behaviour dominates, so revisit with many more drives. To the operator,
+**A1 slews worse: it overshoots the container on CCW swings while digging.** The earlier logs agree. The
 data's slew q01 is -0.894, so A0 cannot command past it. A1 plans reach -1.00 and its applied slew
 is below -0.89 for 1.4-2.8 % of model time (A0: 0-1 %, at the clip). The positive side and the
 other joints barely change. Lift above A0's +0.547 cap: 1-3 % of A1's time, with no visible gain.
