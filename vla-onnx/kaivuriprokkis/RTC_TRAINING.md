@@ -342,6 +342,24 @@ Each changes one thing against A0 = `digging640_rtc12` (head-only, q01/q99 actio
   `runs/to_board.sh NAME` rsyncs it against the RTC bundle and runs board parity. Both are local
   (runs/ is ignored).
 
+**A1 result (board, 2026-10-29): keep q01/q99.** Parity passes (249.5 ms p50, prefix exact). Three
+A0 and three A1 sand drives (~3 min model time each) look the same to the operator, except that
+**A1 slews worse: it overshoots the container on CCW swings while digging.** The logs agree. The
+data's slew q01 is -0.894, so A0 cannot command past it. A1 plans reach -1.00 and its applied slew
+is below -0.89 for 1.4-2.8 % of model time (A0: 0-1 %, at the clip). The positive side and the
+other joints barely change. Lift above A0's +0.547 cap: 1-3 % of A1's time, with no visible gain.
+Chatter (per second of model time: valve total variation, direction reversals) and in-plan
+smoothness are within run-to-run spread. So the q01 clip acts as a slew speed cap that the policy
+needs: slew has no state feedback (cameras only), and full-speed swings carry past the target.
+Measured with `chatter.py RUN...` (board `~/groot-live`, from `applied.json` and `chunks.npy`).
+
+Handover after a manual->model or prompt switch logged 0.6-1.05 "jumps". That was a bookkeeping
+bug: the valves hold centred until the first new plan, but the jump was measured against the plan
+from before the switch. Fixed in groot_live (scaffold `76048f5`, test included). Steady-state
+handover jump p99 is 0.015-0.032 in all six drives. RTC delay live: d = 11 (64 %), 10 (33 %),
+0 (the first plan after a switch). Handover row p50 8.95, max 9.89, so d always covers it.
+Observation->plan 285/296/303 ms (p50/p99/max).
+
 ## Not done
 
 1. **Delay distribution.** `uniform(0..12)` trains every d equally, but the board commits ~10-12
