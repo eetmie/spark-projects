@@ -49,6 +49,10 @@ RUN=(docker run --rm --gpus all --ipc=host --user "$(id -u):$(id -g)" -e HOME=/t
      -e PYTHONPATH=/opt/openpi/src:/opt/openpi/packages/openpi-client/src
      -v "$HERE:/kp:ro" -v "$PI05/export:/pi05:ro" -v "$PI05/excavator:/cfg:ro" -v "$STEP:/step:ro"
      -v "$WORK:/work" -v "$(dirname "$OUT"):/output")
+# The config names its dataset (and so the checkpoint's assets/<dataset>/norm_stats.json) from
+# KAIVURI_DATASET. The host steps above see it, so the container must too. Unset, both fall back
+# to the config's default.
+[[ -n "${KAIVURI_DATASET:-}" ]] && RUN+=(-e KAIVURI_DATASET="$KAIVURI_DATASET")
 if [[ -n "$CONVERTED" ]]; then
     RUN+=(-v "$CONVERTED:/converted:ro"); CHECKPOINT=/converted
     log "reusing conversion $CONVERTED"
