@@ -482,6 +482,12 @@ Findings:
 1. **No pi0.5 RTC on the board yet** (`VLA_LIVE.md`, "Not yet"). For the demo, π0.5 switches chunks at
    d = 0, like stock GR00T (handover jump max 0.75 against 0.11 with RTC). Getting RTC needs a
    `--row-time` export and the prefix in `pi05_runtime.cpp` / `vla_pi05.py`.
+   **Done 2026-10-30** (kaivuriprokkis `feat/pi05-rtc-mode-c` 98b4d5e, not merged). Smoke9 was exported with
+   `--row-time --rtc-max-rows 20`, and all 10 fixtures pass on the Orin, the 5 Mode C ones with the prefix
+   bit-exact. Mode C adds ~3 ms (437.1 -> 440 ms p50). Building it found the Mode C oracle bug
+   (prefix padding left on the noise path, fixed in ef9bdd6) and an export.sh bug (KAIVURI_DATASET was not
+   passed to the container, fixed in 5d356b6). Monday's export of the real checkpoint:
+   `KAIVURI_DATASET=digging_complete_train ./export.sh STEP OUT --config pi05_excavator_rtc -- --row-time --rtc-max-rows 20`.
 2. **Not resumable.** Saves hold params only (`OPENPI_SAVE_OPT_STATE` unset; a full save does not
    fit). After a crash, restart from the last kept step with `--weight-loader.params-path` and the
    remaining steps. The optimizer state restarts, so add a short warmup.
@@ -538,7 +544,9 @@ plain models (X-VLA), and a short anchor on top of Mode C's prefix.
 1. **Delay distribution.** `uniform(0..12)` trains every d equally, but the board commits ~10-12
    rows. A re-train could weight d around the measured latency, or raise d_max to ~15 for slack.
 2. **pi0.5 exporter references with a prefix.** The exporter's stock references use OpenPI's
-   PyTorch model. Mode C fixtures need the same per-row change there, or JAX references.
+   PyTorch model. Mode C fixtures need the same per-row change there, or JAX references. The FP16 split
+   references with a prefix exist (`--row-time` writes `rtc/rtc_fixture_<i>.npz` with `clean`), and the board
+   parity gate runs them. What is still missing is an FP32 stock reference with a prefix.
 3. **Correlated noise.** This is optional and only matters for Mode A inpainting
    (`host/action_stats.py` has Σ). Both trainers sample i.i.d. noise.
 4. **The experiment.** Train plain and RTC on the same data (`digging_native_640_simple` first)
