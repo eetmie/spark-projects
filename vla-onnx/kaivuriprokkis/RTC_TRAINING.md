@@ -499,6 +499,40 @@ Findings:
    stronger prompt.
 6. **Held-out scoring for π0.5 is still to build** (plan step 2).
 
+### Mode A or Mode C for π0.5 on the board (2026-10-30)
+
+**What the LeHome 2026 winner uses** ([IliaLarchenko/lehome_solution](https://github.com/IliaLarchenko/lehome_solution),
+arXiv 2606.27163; 1st online, 2nd real): **Mode A, soft inpainting**, inherited from the BEHAVIOR-1K solution. There is no
+training-time conditioning and no RTC.
+- The overlap rows are pinned to the anchor only while flow time > `t_ip` (0.4-0.5). The pinned
+  error is propagated to the free rows with `Σ_UO Σ_OO⁻¹`, precomputed per anchor length.
+  A correction is skipped if it exceeds 1.0 anywhere. The last steps run free, so the join is soft.
+- They also **train with correlated noise** (`use_correlated_noise=True`, β = 0.5 shrinkage),
+  so the inference noise and the correction share one covariance.
+- Settings: H = 30, 10 steps. Sim: execute 3-5, anchor 3-6. Real (README): execute 5, anchor 1,
+  noise temperature 0.9. Inference for the next chunk overlaps execution (one-chunk delay).
+- No ablations. The author's only finding: "a little anchoring beats none, but strong forced
+  inpainting limits the model's ability to correct itself and hurts performance".
+
+| | Mode A (soft inpainting) | Mode C (training-time prefix) |
+|---|---|---|
+| model | any checkpoint, plain included | must be trained for it (`pi05_excavator_rtc` is) |
+| join | soft: the model can drift from the anchor | exact: committed rows go in clean |
+| large delay (ours: d ≈ 10-12 rows at ~300 ms) | needs a long anchor, which is the "strong inpainting" the winner found hurts | what it is trained for (d 0..20) |
+| tuning | anchor length and `t_ip` at run time | d_max is fixed in training |
+| extra compute | a blend per denoise step (HD x HD = 200 x 200 here) | none (per-row modulation in the engines) |
+| noise | wants correlated noise in training too (ours is i.i.d.) | i.i.d. is fine |
+| proven here | no | GR00T: handover jump max 0.107 vs 0.753 stock |
+| board work | P1 host library, P2 device blend inside the CUDA-graph denoise loop, P3 integration | P4 per-row modulation + prefix inputs in `pi05_runtime.cpp`, P5 prefix fixtures, then `vla_live.py`'s existing RTC loop |
+
+**For Wednesday: Mode C.** The checkpoint is already trained for it, it suits our latency, and the
+Python loop exists from GR00T. LeHome's setting is a fast GPU, short execution and a 1-row anchor,
+so inference finishes before many rows are committed. That is the regime where soft inpainting
+works best. On the Orin, ~10 rows are committed per plan.
+
+Worth borrowing later: correlated training noise (Not done, item 3), Mode A as a fallback for
+plain models (X-VLA), and a short anchor on top of Mode C's prefix.
+
 ## Not done
 
 1. **Delay distribution.** `uniform(0..12)` trains every d equally, but the board commits ~10-12
