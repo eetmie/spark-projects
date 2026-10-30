@@ -146,10 +146,12 @@ class Blend(unittest.TestCase):
         v = linear_velocity(np.float32(-0.5))
         x = rtc.initial(self.z, self.x0, sched)
         np.testing.assert_array_equal(x[:4, :D], self.x0)
+        np.testing.assert_array_equal(x[:4, D:], 0)  # padding as trained: zeros, not noise
         for s in range(10):
             x = (x + np.float32(-0.1) * v(s, x)).astype(np.float32)
             x, _ = rtc.blend(x, self.z, self.x0, sched, s)
             np.testing.assert_array_equal(x[:4, :D], self.x0)
+            np.testing.assert_array_equal(x[:4, D:], 0)
         plain, _ = rtc.denoise(v, self.z, rtc.schedule("off", 10))
         np.testing.assert_array_equal(x[4:], plain[4:])
 

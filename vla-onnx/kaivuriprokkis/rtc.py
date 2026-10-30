@@ -17,7 +17,11 @@ Sigma is the *correlation* matrix of flattened normalized action chunks with shr
 `beta * Sigma + (1 - beta) * I` (reference default beta 0.5).
 
 Mode C (training-time clean prefix): rows < d are set to the clean anchor at the start and
-after every step, and are fed the t = 0 style. No correction.
+after every step, and are fed the t = 0 style. No correction. The anchor covers the full
+padded width: the D robot dims, then zeros. That is what training sees on those rows
+(OpenPI's PadStatesAndActions zero-pads the normalized actions, and a t = 0 row is the clean
+action itself). Leaving the padding on the noise path would feed the model prefix rows it
+never saw in training.
 
 Layout: chunks are [H, W] with W the padded model width (32); only the first D robot
 dims are anchored or corrected. Flattened index = row * D + dim.
@@ -172,6 +176,7 @@ def initial(z: np.ndarray, x0: np.ndarray | None, sched: Schedule) -> np.ndarray
     x = np.array(z, np.float32, copy=True)
     if x0 is not None and sched.mode == "clean":
         x[:len(x0), :x0.shape[1]] = x0
+        x[:len(x0), x0.shape[1]:] = 0  # zero padding, as trained
     return x
 
 
@@ -204,6 +209,8 @@ def blend(x_new: np.ndarray, z: np.ndarray, x0: np.ndarray | None, sched: Schedu
             robot = robot + corr
             info["corrected"] = True
     out[:, :dims] = robot.reshape(horizon, dims)
+    if sched.mode == "clean":
+        out[:rows, dims:] = 0  # the prefix's padding stays zero, as trained
     return out, info
 
 
