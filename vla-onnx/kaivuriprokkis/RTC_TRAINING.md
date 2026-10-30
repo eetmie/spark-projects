@@ -372,10 +372,11 @@ Observation->plan 285/296/303 ms (p50/p99/max).
 
 ### Head-only beat the full fine-tune (2026-10-30)
 
-On the machine, **A0 (head-only) drives clearly better than F0** (`--tune-llm --tune-visual`). Both
-drive poorly overall ("meh"), but RTC works well on both: plans join smoothly. Same data (100 takes,
-~41 min), same 20k steps at batch 32 (~8.6 passes), and the last checkpoint of each was tested.
-Likely causes, most likely first:
+On the machine, **F0 (`--tune-llm --tune-visual`) drove worse than both head-only runs, A0 and A1.**
+All three drive poorly overall ("meh"), but RTC works well on all of them: plans join smoothly. Same data
+(100 takes, ~41 min), same 20k steps at batch 32 (~8.6 passes), and the last checkpoint of each was
+tested. The most likely cause is heavy overfitting: 20k steps is far too long for so little data,
+and F0 has the most parameters free to memorize it. In detail, most likely first:
 
 1. **Overfitting and forgetting.** F0 trains 3.14 B parameters on 41 min of driving. The frozen
    Cosmos-Reason VLM keeps general visual features. A trained one learns cues specific to the 100
