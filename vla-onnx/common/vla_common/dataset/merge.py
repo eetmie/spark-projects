@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Merge LeRobot v3 recordings of one task into one dataset, without re-encoding video.
+"""Merge LeRobot v3 recordings into one dataset, without re-encoding video.
 
 Built for the new-IMU retrain: `masi_digging_new_imu` + `_edge_cases` (6-wide action,
 tracks appended) plus the sand half of `masi_digging_dry_2` (4-wide, recorded before the
@@ -27,6 +27,19 @@ Usage:
         --src "~/Desktop/kaivurin_datasetit/masi_digging_dry_2::move sand to container"
 
 `ROOT::INSTRUCTION` keeps only that source's episodes with that instruction.
+
+Without `--task` every episode keeps its own instruction, and the task table is their
+union in first-seen order. That is how the native recordings (rocks and sand) and the
+python-stack ones (sand) become one multi-task dataset:
+
+    python -m vla_common.dataset.merge --out pi05/datasets/digging_complete_v3 --drop clock. \
+        --src pi05/datasets/digging_native_640_simple_v3 --src ~/Desktop/masi_dual_camera
+
+`--drop PREFIX` removes every feature whose name starts with PREFIX, from the data, the
+schema and the stats. The two recorders name their timing diagnostics differently
+(`clock.cam1.age_s` against `clock.cam1_age`), and no policy reads them. Sources are compared
+on what a policy sees (dtype, shape, names, video size, codec, pixel format and fps), not on
+encoder bookkeeping such as the preset either writer happened to record.
 
 `--action-norm trackL=0,0.15` pins a channel's MEAN_STD stats. The tracks need it: they
 move in ~1% of frames, so their measured std is ~0.035 and a normal track command lands
@@ -60,7 +73,10 @@ def parse_args():
     p.add_argument("--src", action="append", required=True,
                    help="ROOT or ROOT::INSTRUCTION (keep only that task); repeat, in output order")
     p.add_argument("--out", type=Path, required=True, help="merged dataset root to create")
-    p.add_argument("--task", required=True, help="the one instruction every kept episode gets")
+    p.add_argument("--task", help="the one instruction every kept episode gets "
+                                  "(default: each episode keeps its own)")
+    p.add_argument("--drop", action="append", default=[], metavar="PREFIX",
+                   help="drop every feature whose name starts with PREFIX (repeatable)")
     p.add_argument("--action-norm", action="append", default=[], metavar="NAME=MEAN,STD",
                    help="pin one action channel's normalisation stats (repeatable)")
     p.add_argument("--force", action="store_true", help="replace an existing --out")
@@ -74,6 +90,17 @@ def to_np(v):
     return np.asarray(v)
 
 
+VIDEO_CONTRACT = ("video.height", "video.width", "video.codec", "video.pix_fmt", "video.fps")
+
+
+def contract(feat: dict) -> dict:
+    """The part of a feature a policy depends on; per-feature fps and encoder notes are not."""
+    out = {k: feat.get(k) for k in ("dtype", "shape", "names")}
+    if feat["dtype"] == "video":
+        out["info"] = {k: feat.get("info", {}).get(k) for k in VIDEO_CONTRACT}
+    return out
+
+
 def read_episodes(root: Path) -> pd.DataFrame:
     shards = sorted((root / "meta" / "episodes").glob("*/*.parquet"))
     return pd.concat([pd.read_parquet(s) for s in shards], ignore_index=True)
@@ -84,22 +111,26 @@ def main():
     from lerobot.datasets.compute_stats import aggregate_stats
     from lerobot.datasets.io_utils import write_info, write_stats, write_tasks
 
+    drop = tuple(args.drop)
     srcs = []
     for spec in args.src:
         root, _, keep = spec.partition("::")
         root = Path(root).expanduser().resolve()
         info = json.loads((root / "meta" / "info.json").read_text())
+        info["features"] = {k: v for k, v in info["features"].items() if not k.startswith(drop)}
         srcs.append({"root": root, "keep": keep or None, "info": info})
 
-    # --- schema: widest action wins, everything else must match exactly ------------
+    # --- schema: widest action wins, everything else must match on its contract ----
     ref = max(srcs, key=lambda s: s["info"]["features"]["action"]["shape"][0])["info"]
     feats = ref["features"]
     names = feats["action"]["names"]
     for s in srcs:
         f = s["info"]["features"]
-        other = {k: v for k, v in f.items() if k != "action"}
-        if other != {k: v for k, v in feats.items() if k != "action"}:
-            raise SystemExit(f"{s['root'].name}: non-action features differ from {names}")
+        other = {k: contract(v) for k, v in f.items() if k != "action"}
+        want = {k: contract(v) for k, v in feats.items() if k != "action"}
+        if other != want:
+            diff = sorted(k for k in set(other) | set(want) if other.get(k) != want.get(k))
+            raise SystemExit(f"{s['root'].name}: features differ from the reference: {diff}")
         if names[:len(f["action"]["names"])] != f["action"]["names"]:
             raise SystemExit(f"{s['root'].name}: action {f['action']['names']} is not a "
                              f"prefix of {names}; refusing to pad")
@@ -117,7 +148,7 @@ def main():
     # action length 4 plus a separate action.tracks.
     wide = next(s for s in srcs if s["info"] is ref)
     schema = pq.read_schema(next((wide["root"] / "data" / "chunk-000").glob("*.parquet")))
-    schema = schema.remove_metadata()
+    schema = pa.schema([fld for fld in schema if not fld.name.startswith(drop)])
     schema = schema.with_metadata({"huggingface": json.dumps(
         {"info": {"features": datasets.Features.from_arrow_schema(schema).to_dict()}})})
 
@@ -129,6 +160,7 @@ def main():
     (out / "meta").mkdir(parents=True)
 
     ep_rows, ep_stats, provenance = [], [], []
+    task_ids: dict[str, int] = {}  # instruction -> task_index, first-seen order
     next_ep = next_index = 0
     for ci, s in enumerate(srcs):
         root = s["root"]
@@ -146,7 +178,8 @@ def main():
         # old episode -> (new episode, index shift)
         remap, first_ep = {}, next_ep
         for _, e in eps.iterrows():
-            remap[int(e["episode_index"])] = (next_ep, next_index - int(e["dataset_from_index"]))
+            tid = task_ids.setdefault(args.task or e["task"], len(task_ids))
+            remap[int(e["episode_index"])] = (next_ep, next_index - int(e["dataset_from_index"]), tid)
             next_ep += 1
             next_index += int(e["length"])
 
@@ -155,12 +188,13 @@ def main():
         for f in sorted((root / "data" / "chunk-000").glob("*.parquet")):
             df = pd.read_parquet(f)
             df = df[df["episode_index"].isin(remap)]
+            df = df.drop(columns=[c for c in df.columns if c.startswith(drop)])
             if df.empty:
                 continue
             new_ep = df["episode_index"].map(lambda e: remap[e][0])
             df["index"] = df["index"] + df["episode_index"].map(lambda e: remap[e][1])
+            df["task_index"] = df["episode_index"].map(lambda e: remap[e][2])
             df["episode_index"] = new_ep
-            df["task_index"] = 0
             if pad:
                 df["action"] = [np.concatenate([np.asarray(a, np.float32), np.zeros(pad, np.float32)])
                                 for a in df["action"]]
@@ -184,9 +218,11 @@ def main():
 
         # --- episode metadata -------------------------------------------------------
         for _, e in eps.iterrows():
-            new_ep, shift = remap[int(e["episode_index"])]
-            row = e.drop(labels=["task"]).to_dict()
-            row.update({"episode_index": new_ep, "tasks": [args.task],
+            new_ep, shift, tid = remap[int(e["episode_index"])]
+            e = e.drop(labels=["task", *[c for c in e.index
+                                         if c.startswith("stats/") and c.split("/")[1].startswith(drop)]])
+            row = e.to_dict()
+            row.update({"episode_index": new_ep, "tasks": [args.task or e["tasks"][0]],
                         "data/chunk_index": ci,
                         "dataset_from_index": int(e["dataset_from_index"]) + shift,
                         "dataset_to_index": int(e["dataset_to_index"]) + shift,
@@ -202,7 +238,7 @@ def main():
                 if feat in INDEX_STATS and stat != "count":
                     v = {"episode_index": np.full_like(v, new_ep),
                          "index": v + shift,
-                         "task_index": np.zeros_like(v)}[feat]
+                         "task_index": np.full_like(v, tid)}[feat]
                 row[col] = v
                 stats.setdefault(feat, {})[stat] = v
             ep_rows.append(row)
@@ -234,13 +270,14 @@ def main():
                         "pinned": [mean, std]}
         stats["action"]["mean"][i], stats["action"]["std"][i] = mean, std
     write_stats(stats, out)
-    write_tasks(pd.DataFrame({"task_index": [0]}, index=pd.Index([args.task], name="task")), out)
+    write_tasks(pd.DataFrame({"task_index": list(task_ids.values())},
+                             index=pd.Index(list(task_ids), name="task")), out)
     info = dict(ref)
-    info.update({"total_episodes": next_ep, "total_frames": next_index, "total_tasks": 1,
+    info.update({"total_episodes": next_ep, "total_frames": next_index, "total_tasks": len(task_ids),
                  "splits": {"train": f"0:{next_ep}"}})
     write_info(info, out)
     (out / ".merge.json").write_text(json.dumps(
-        {"task": args.task, "sources": provenance, "action_norm_pinned": pinned,
+        {"task": args.task, "tasks": list(task_ids), "dropped": list(drop), "sources": provenance, "action_norm_pinned": pinned,
          "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}, indent=2))
     print(f"{out}\n  {next_ep} episodes, {next_index} frames, action {names}")
 
