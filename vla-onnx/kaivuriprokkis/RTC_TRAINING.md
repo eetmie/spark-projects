@@ -362,6 +362,92 @@ handover jump p99 is 0.015-0.032 in all six drives. RTC delay live: d = 11 (64 %
 0 (the first plan after a switch). Handover row p50 8.95, max 9.89, so d always covers it.
 Observation->plan 285/296/303 ms (p50/p99/max).
 
+### Head-only beat the full fine-tune (2026-10-30)
+
+On the machine, **A0 (head-only) drives clearly better than F0** (`--tune-llm --tune-visual`). Both
+drive poorly overall ("meh"), but RTC works well on both: plans join smoothly. Same data (100 takes,
+~41 min), same 20k steps at batch 32 (~8.6 passes), and the last checkpoint of each was tested.
+Likely causes, most likely first:
+
+1. **Overfitting and forgetting.** F0 trains 3.14 B parameters on 41 min of driving. The frozen
+   Cosmos-Reason VLM keeps general visual features. A trained one learns cues specific to the 100
+   takes (lighting, sand texture, the pile, people in view) that do not hold on another day.
+   Freezing it is strong regularization.
+2. **One learning rate for everything.** F0 ran `learning_rate 1e-4` (warmup 5 %, weight decay
+   1e-5) on the VLM too, the same rate as the freshly initialized DiT. Pretrained 2 B VLMs are
+   usually tuned at ~1e-5 or less. 1e-4 moves the features the action head was built on.
+3. **No image augmentation.** Both runs have `color_jitter_params: null` and `crop_fraction:
+   null`. Training the vision tower without augmentation memorizes faster.
+4. **The last checkpoint, unscored.** There are no held-out takes, and `--save-total-limit 3`
+   kept only 16k/18k/20k. If F0 peaked earlier, nothing could show it.
+5. **Drive noise.** Drive-to-drive spread already hid A0 vs A1 (above). A clear gap is probably
+   real, but count drives before calling a small one.
+
+X-VLA went the other way (full fine-tune won): it is 0.9 B with a weaker pretrained vision tower,
+so there is less to forget.
+
+**Fixes to try, cheapest first:**
+- **More data.** `digging_complete` (below) has 3x the driving (307 takes, 102 min).
+- **Held-out scoring and more checkpoints.** Train on `digging_complete_train`, keep every 2.5k
+  steps (`--save-total-limit` high enough), and score each on the held-out takes with
+  `open_loop.py` before driving.
+- **Augmentation.** Brightness/contrast jitter and a mild random crop (`color_jitter_params`,
+  `crop_fraction` in the GR00T data config). The images are IR, so no hue or saturation jitter.
+- **Lower backbone rate.** 1e-5 for the VLM and 1e-4 for the head. `launch_finetune` has one LR,
+  so this needs parameter groups in `finetune.py` (a small optimizer patch, as `rtc_patch.py` does).
+- **Partial unfreeze.** `--tune-llm` without `--tune-visual` (or the reverse) or LoRA, between A0
+  and F0.
+- **EMA** (Not done, item 5). On pi0.5 it costs no step time. Its benefit here is not measured yet.
+
+## digging_complete (2026-10-30)
+
+One training set from every recording with today's cameras (wrist IR2 rotated 180 degrees, cabin IR1):
+
+| source | takes | task | min |
+|---|---|---|---|
+| native `digging_native_640` (runs 0, 2) | 50 / 50 | rocks / sand | 17.0 / 28.4 |
+| native `recordings/run-000004-53bc79c1` (2026-10-30) | 107 | sand | 26.5 |
+| python stack `masi_dual_camera` (kaivuriprokkis-python, 2026-10-29) | 100 | sand | 34.3 |
+| **total** | **307** | 50 rock / 257 sand | **102.3** |
+
+- The python stack records the same serials, IR imagers, rotation, state (lift/tilt/scoop, deg),
+  valve actions, 30 fps and H.264 CRF 18 as native. State ranges agree to within 3 deg.
+- Built with `vla_common.dataset.merge` (no `--task`: each take keeps its instruction;
+  `--drop clock.`: the two recorders name their timing columns differently), then `to_v21`
+  (every frame verified), then `groot/excavator/prepare_dataset.py`.
+- `pi05/datasets/digging_complete{,_v3}` and `groot/datasets/digging_complete_gr00t{,_fixedbounds}`.
+- `digging_complete_train` (`vla_common.dataset.subset_v21`): 276 takes, without the 31 held out
+  by the X-VLA rule (every 10th from 5: 5 rock + 26 sand). The held-out takes keep their ids in
+  `digging_complete`, so it is the scoring source. OpenPI's pinned LeRobot cannot take an episode
+  list (with `delta_timestamps` a skipped episode shifts every later one), hence a copy. Its
+  videos are symlinks, 13 MB.
+- Left out: `masi_digging_new_imu`, `_edge_cases` and `dry_2`. They come from one old low front camera
+  (cam1 its IR image, cam2 its RGB image of the same view), and neither matches today's wrist or
+  cabin view. Mixing them would teach the model that cam1 is sometimes a front view and cam2
+  sometimes RGB. pi0.5 could take them as a third, masked view in a separate experiment.
+
+## pi0.5 on digging_complete: plan for the 2026-11-04 demo
+
+The X-VLA recipe: train on the training copy, keep several checkpoints, score them on the held-out
+takes, and drive the best.
+
+1. **Train.** `pi05/runs/queue_complete.sh` (queued 2026-10-30, starts when the X-VLA dual-camera
+   run exits, ~07:30 on 10-31). `pi05_excavator_rtc`, full fine-tune from pi05_base, EMA 0.99,
+   batch 32, **10k steps, cosine decay 10k**, saves 2.5k/5k/7.5k/10k kept
+   (`--save-interval 2500 --keep-period 2500`). At ~17.5 s/step it takes ~49 h, finishing ~Mon 11-02 08:30.
+   That is ~1.9 passes over the 167k training frames. Norm stats come from the training copy
+   (`assets/pi05_excavator_rtc/digging_complete_train`).
+2. **Score.** Each checkpoint on the 31 held-out takes of `digging_complete`, with `eval/compare.py`'s
+   metric (displacement error over a fixed horizon, zero-order hold to 30 Hz, the two trivial
+   baselines). compare.py loads LeRobot policies only, so pi0.5 needs a loader in the OpenPI venv:
+   TODO before Monday.
+3. **Export and drive** the best checkpoint (`vla-onnx/kaivuriprokkis/export.sh`) with board
+   parity, next to the X-VLA dual-camera model and GR00T A0.
+
+Step timing for other budgets: 5k ~24 h, 20k ~4 days, 30k (the config default) ~6 days. The
+config's decay is 30k, so a shorter run must pass `--lr-schedule.decay-steps` or it ends at a high
+LR.
+
 ## Not done
 
 1. **Delay distribution.** `uniform(0..12)` trains every d equally, but the board commits ~10-12
