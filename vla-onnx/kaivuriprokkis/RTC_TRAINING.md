@@ -342,18 +342,26 @@ Each changes one thing against A0 = `digging640_rtc12` (head-only, q01/q99 actio
   `runs/to_board.sh NAME` rsyncs it against the RTC bundle and runs board parity. Both are local
   (runs/ is ignored).
 
-**A1 result (board, 2026-10-29): inconclusive, deferred; q01/q99 stays the default.** Parity
-passes (249.5 ms p50, prefix exact). Timed drives with B = success marker: A0 3.7 and 3.2
-successes/min (12 in 194 s, 5 in 94 s), A1 3.75/min (13 in 208 s). That is within run-to-run
-spread; drive-to-drive model behaviour dominates, so revisit with many more drives. To the operator,
-**A1 slews worse: it overshoots the container on CCW swings while digging.** The earlier logs agree. The
-data's slew q01 is -0.894, so A0 cannot command past it. A1 plans reach -1.00 and its applied slew
-is below -0.89 for 1.4-2.8 % of model time (A0: 0-1 %, at the clip). The positive side and the
-other joints barely change. Lift above A0's +0.547 cap: 1-3 % of A1's time, with no visible gain.
-Chatter (per second of model time: valve total variation, direction reversals) and in-plan
-smoothness are within run-to-run spread. So the q01 clip acts as a slew speed cap that the policy
-needs: slew has no state feedback (cameras only), and full-speed swings carry past the target.
-Measured with `chatter.py RUN...` (board `~/groot-live`, from `applied.json` and `chunks.npy`).
+**A0/A1 result (board, 2026-10-29, revised 2026-10-30): inconclusive. The training outweighed the
+difference.** Both models overfit the 100 takes, so the operator could not tell the action bounds
+apart from each model's own quality. q01/q99 stays the default because nothing showed it to be
+worse, not because it won. Parity passes (249.5 ms p50, prefix exact). Timed drives counted
+operator-marked successes: A0 3.7 and 3.2/min (12 in 194 s, 5 in 94 s), A1 3.75/min (13 in 208 s).
+That is within run-to-run spread. The B success marker has since been removed from `vla_live.py`
+(kaivuriprokkis `chore/drop-success-marker`). Compare bounds again only on a model that does
+not overfit (held-out scoring first, see "Head-only beat the full fine-tune").
+
+Logged differences, not attributable to the bounds for the reason above:
+- A1 overshot the container on CCW swings to the operator. The data's slew q01 is -0.894, so A0
+  cannot command past it. A1 plans reach -1.00, and its applied slew is below -0.89 for 1.4-2.8 % of
+  model time (A0: 0-1 %, at the clip). The positive side and the other joints barely change.
+- Lift above A0's +0.547 cap: 1-3 % of A1's time, with no visible gain.
+- Chatter (per second of model time: valve total variation, direction reversals) and in-plan
+  smoothness are within run-to-run spread.
+
+If it holds up, the q01 clip acts as a slew speed cap. Slew has no state feedback (cameras only),
+so full-speed swings can carry past the target. Measured with `chatter.py RUN...` (board
+`~/groot-live`, from `applied.json` and `chunks.npy`).
 
 Handover after a manual->model or prompt switch logged 0.6-1.05 "jumps". That was a bookkeeping
 bug: the valves hold centred until the first new plan, but the jump was measured against the plan
@@ -380,8 +388,9 @@ Likely causes, most likely first:
    null`. Training the vision tower without augmentation memorizes faster.
 4. **The last checkpoint, unscored.** There are no held-out takes, and `--save-total-limit 3`
    kept only 16k/18k/20k. If F0 peaked earlier, nothing could show it.
-5. **Drive noise.** Drive-to-drive spread already hid A0 vs A1 (above). A clear gap is probably
-   real, but count drives before calling a small one.
+5. **Overfit models hide small changes.** A0 vs A1 was inconclusive for this reason (above): the
+   training outweighed the change under test. A gap as large as A0 vs F0 is still visible, but
+   single-change comparisons need a model that holds up on held-out takes first.
 
 X-VLA went the other way (full fine-tune won): it is 0.9 B with a weaker pretrained vision tower,
 so there is less to forget.
@@ -447,6 +456,47 @@ takes, and drive the best.
 Step timing for other budgets: 5k ~24 h, 20k ~4 days, 30k (the config default) ~6 days. The
 config's decay is 30k, so a shorter run must pass `--lr-schedule.decay-steps` or it ends at a high
 LR.
+
+### Audit before the run (2026-10-30)
+
+Checked and in order:
+- **Disk.** 116 GB free on the internal NVMe. The four kept π0.5 saves are ~12 GB each (EMA params
+  only), and X-VLA adds ~25 GB more, leaving ~40 GB.
+- **Board contract.** cam1 goes to `base_0_rgb`, cam2 to `left_wrist_0_rgb`, and the third slot is
+  zeros and masked. The joint-angle prompt (quantile bins) is built per step on the board
+  (`pi05_runtime.cpp`). Actions are quantile-unnormalized. `vla_live.py` runs the prepared fixtures
+  at every load, so a mismatch stops the load.
+- **Data.** The training copy reads frame-identical in OpenPI's LeRobot, including the 50-row action
+  windows and padding. The 31 held-out takes are absent. Norm stats come from the training copy.
+- **Schedule.** Warmup 1k, peak 5e-5, cosine to 5e-6 at 10k, AdamW with clip 1.0, EMA 0.99, batch 32.
+- **RTC loss.** d is uniform over 0..20, and only rows after the prefix are scored. The checkpoint
+  also runs at d = 0.
+- **Action range.** Quantile normalization clips at q01/q99: slew -0.906/+0.761, lift q99 +0.577.
+  These are the same speed caps GR00T A0 has.
+- **Augmentation is on** (OpenPI's, unlike the GR00T runs): 95 % random crop and ±5° rotation on
+  `base_0_rgb`, plus brightness 0.3 / contrast 0.4 jitter on both views. The saturation jitter is a
+  no-op on gray IR.
+
+Findings:
+1. **No pi0.5 RTC on the board yet** (`VLA_LIVE.md`, "Not yet"). For the demo, π0.5 switches chunks at
+   d = 0, like stock GR00T (handover jump max 0.75 against 0.11 with RTC). Getting RTC needs a
+   `--row-time` export and the prefix in `pi05_runtime.cpp` / `vla_pi05.py`.
+2. **Not resumable.** Saves hold params only (`OPENPI_SAVE_OPT_STATE` unset; a full save does not
+   fit). After a crash, restart from the last kept step with `--weight-loader.params-path` and the
+   remaining steps. The optimizer state restarts, so add a short warmup.
+3. **Camera slots are swapped from what π0.5 was pretrained on.** pi05_base saw a third-person
+   view in `base_0_rgb` and a wrist camera in the wrist slots. Here the wrist camera is in
+   `base_0_rgb` and the cabin view in `left_wrist_0_rgb`. So the crop/rotate augmentation hits the
+   wrist camera and spares the static cabin view. Kept for this run, because the exporter, fixtures
+   and board order follow it. For a later run, consider cam2 -> `base_0_rgb` and cam1 -> wrist,
+   with the exporter and board changed together.
+4. **The python stack lags native by 1-2 frames.** Command-to-joint-velocity correlation peaks at
+   +1 frame (tilt, scoop) and +2 (lift) on native, and at +2 / +4 on the python stack. That is 33-67 ms
+   against a 1.67 s chunk on a slow machine. Kept on purpose: more data beats less, slightly cleaner
+   data.
+5. **Task balance.** Rocks are 50 of 307 takes (16 %), 5 of them held out. Expect sand to be the
+   stronger prompt.
+6. **Held-out scoring for π0.5 is still to build** (plan step 2).
 
 ## Not done
 
