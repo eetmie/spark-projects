@@ -217,6 +217,47 @@ PYTHONPATH=<pytest> $PY -m pytest tests -q                                      
   `process_count`-aware loader, but nothing calls `jax.distributed.initialize`, so multi-host
   JAX needs a small patch, untested.
 
+### From now on: batch 16 for full fine-tunes on one Spark (2026-11-01)
+
+The user's call after the weekend π0.5 run (`digging_complete_rtc20_10k`, batch 32, EMA 0.99).
+That run was stopped three times:
+
+| when | setup | what stopped it |
+|---|---|---|
+| step 345 | cuda_async, not preallocated | OOM: the pool hands the 21.9 GB step scratch back every step and one re-take failed |
+| step 379 | cuda_async, preallocated 0.64 | OOM: the pool fragments and reserves past its cap (80 -> 95 GB) |
+| step 5000 | BFC, preallocated 0.66 (82.4 GB arena) | memguard during the save: 27 -> 3 GB free in 20 s (floor 4), with 12 GB of swap still free |
+
+The cuda_async rows in the table above were 20-step probes. On full runs, cuda_async OOMs within
+about 2 h, so long runs use BFC preallocated (`XLA_PYTHON_CLIENT_ALLOCATOR=default
+XLA_PYTHON_CLIENT_PREALLOCATE=true`).
+
+Settings for the next full fine-tune. Only batch 16 is the user's call; the other numbers are
+estimates to probe first:
+
+- **batch 16, EMA on.**
+- **Arena:** a probe decides it; the estimate is `MEM_FRACTION` ~0.60. XLA's peak after
+  rematerialization was measured at 70.4 GiB for batch 32 and 67.2 GiB for batch 24 (the compile
+  log's `hlo_rematerialization` line), so ~0.4 GiB per sample and ~64 GiB at batch 16.
+  Probe: 20 steps with saves at 10 and 20, then take the smallest fraction that loads and steps.
+- **The same passes over the data:** twice the steps for the same samples (10k at 32 -> 20k at
+  16), with saves every 5k. Peak LR ~3.5e-5 (square-root scaling from 5e-5 at 32), warmup 1k.
+  Both untested. Measure s/step in the probe: a step will not take half as long, because the
+  AdamW and EMA update over all 3.3 B parameters is a fixed cost.
+- **memguard** should count free swap, or use a 2 GB floor. The step-5000 kill came from a ~1 min
+  save dip with swap mostly unused.
+
+What batch 16 fixes, and what it does not:
+- It does not change the 53.7 GB held on the device (params 13.2 + EMA 13.2 + AdamW 26.4), which
+  does not depend on batch.
+- It does not change the save dip either. Orbax copies the 12.5 GB EMA params to host. The dip
+  was 17 GB at step 2500 and 24 GB at step 5000, at any batch.
+- What it buys is a smaller arena. At ~0.60 instead of 0.66 the host gets ~7 GiB more, so the
+  lowest point in a save would be ~10 GB instead of 3.
+- With BFC preallocated, the fragmentation OOMs are already gone at any batch.
+- The weekend run's crash restarts already use the middle ground: batch 24 in a 0.62 arena
+  (`pi05/runs/watchdog_complete.sh`).
+
 ## GR00T digging640_rtc12 on the board (2026-10-28)
 
 The single-frame checkpoint (20k steps) runs on pikkumasi2tb at delay 0 on the existing scalar-time
