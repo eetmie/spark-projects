@@ -280,6 +280,8 @@ def main():
         {"task": args.task, "tasks": list(task_ids), "dropped": list(drop), "sources": provenance, "action_norm_pinned": pinned,
          "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}, indent=2))
     print(f"{out}\n  {next_ep} episodes, {next_index} frames, action {names}")
+    from vla_common.dataset.audit import audit_after
+    audit_after(out)
 
 
 if __name__ == "__main__":

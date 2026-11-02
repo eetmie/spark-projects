@@ -148,6 +148,13 @@ VIEW_ARGS=(--src "$SRC" --if-stale "$IF_STALE")
 ROOT=$("$PY" -m vla_common.dataset.view "${VIEW_ARGS[@]}") || exit 2
 REPO_ID=local/$(basename "$ROOT")
 
+# Recording faults train a model that drives badly and looks like a model problem (2026-10-31:
+# a frozen lift IMU). Refuse a recording that failed vla_common.dataset.audit or was never
+# audited; VLA_ALLOW_UNAUDITED=1 overrides. Smoke runs only check the plumbing, so they skip it.
+if [ "$SMOKE" = 0 ]; then
+    "$PY" -m vla_common.dataset.audit --require "$SRC" || exit 2
+fi
+
 # --- split ---------------------------------------------------------------------------
 SPLIT_ARGS=(--root "$ROOT")
 case "$HOLDOUT" in

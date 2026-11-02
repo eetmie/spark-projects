@@ -109,7 +109,16 @@ def resolve_split(ckpts: dict, datasets: pathlib.Path):
     train = sorted(int(e) for e in s["kept_source_episodes"])
     if set(held) & set(train):
         raise SystemExit(f"{sub}: held-out and kept episodes overlap")
-    return train_id, src, train, held
+    # Held-out episodes the source's audit FAILed (a frozen sensor, a stalled camera) are not
+    # ground truth: scoring against them measures the fault, not the model.
+    failed = []
+    audit = src / "meta" / "audit.json"
+    if audit.exists():
+        failed = sorted(set(held) & set(json.loads(audit.read_text()).get("bad_episodes", [])))
+        held = [e for e in held if e not in failed]
+    else:
+        print(f"!! {src.name} has no audit (python -m vla_common.dataset.audit {src}); scoring every held-out episode")
+    return train_id, src, train, held, failed
 
 
 def score(pred, gt, joints, fps):
@@ -134,7 +143,7 @@ def main():
     for spec in a.ckpt:
         label, path = ckpt_label(spec)
         ckpts[label] = path
-    train_id, src, train_eps, held = resolve_split(ckpts, datasets)
+    train_id, src, train_eps, held, failed = resolve_split(ckpts, datasets)
 
     # config.py reads the dataset name at import: it must name the training copy, whose
     # norm stats the checkpoint carries.
@@ -181,6 +190,8 @@ def main():
 
     print(f"source {src.name} @ {fps} fps, joints {joints}; trained on {train_id} ({len(train_eps)} episodes)")
     print(f"held out {len(held)} episodes (from {train_id}/meta/subset.json): {held}")
+    if failed:
+        print(f"skipped {len(failed)} held-out episodes the source's audit FAILed: {failed}")
     if a.only_task:
         print(f"scoring the {len(eps)} that carry {a.only_task!r}")
     counts = {}
@@ -275,7 +286,7 @@ def main():
     out = a.json_out or ((a.sweep.expanduser().resolve() if a.sweep else next(iter(ckpts.values())).parent)
                          / "heldout_scores.json")
     out.write_text(json.dumps({"source": str(src), "train_dataset": train_id, "held_out_episodes": held,
-                               "scored_episodes": eps, "only_task": a.only_task, "stride": a.stride,
+                               "scored_episodes": eps, "skipped_audit_fail": failed, "only_task": a.only_task, "stride": a.stride,
                                "points": len(points), "runs": results}, indent=2))
     print(f"\nwrote {out}")
 

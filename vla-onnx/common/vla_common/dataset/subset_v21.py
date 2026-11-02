@@ -4,6 +4,12 @@
     python -m vla_common.dataset.subset_v21 --src pi05/datasets/digging_complete \
         --dst pi05/datasets/digging_complete_train            # holds out every 10th from 5
     python -m vla_common.dataset.subset_v21 --src SRC --dst DST --val "5 15 25"
+    python -m vla_common.dataset.subset_v21 --src SRC --dst DST --drop-failed   # without SRC's audit FAILs
+
+`--drop-failed` leaves out the episodes SRC's audit (vla_common.dataset.audit, meta/audit.json)
+FAILed: frozen sensors, stalled cameras, gaps. The held-out list is unchanged, so scoring on SRC
+still sees the same ids; score_heldout skips held-out episodes the audit failed. `--drop "ids"`
+leaves out episodes by hand. Both are recorded in subset.json.
 
 WHY A COPY. OpenPI and GR00T train on a whole v2.1 dataset, and neither takes an episode
 list. The LeRobot that OpenPI pins does have `LeRobotDataset(episodes=...)`, but with
@@ -44,11 +50,13 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text("".join(json.dumps(r) + "\n" for r in rows))
 
 
-def subset(src: Path, dst: Path, val: list[int] | None = None) -> dict:
+def subset(src: Path, dst: Path, val: list[int] | None = None, drop: list[int] | None = None) -> dict:
     info = json.loads((src / "meta" / "info.json").read_text())
     if info.get("codebase_version") != "v2.1":
         raise SystemExit(f"{src} is {info.get('codebase_version')}, not v2.1")
     n, held_out, train = split(src, val)
+    drop = sorted(set(drop or []))
+    train = [e for e in train if e not in set(drop)]
     chunks = int(info["chunks_size"])
     video_keys = [k for k, f in info["features"].items() if f["dtype"] == "video"]
     episodes = {e["episode_index"]: e for e in read_jsonl(src / "meta" / "episodes.jsonl")}
@@ -94,7 +102,7 @@ def subset(src: Path, dst: Path, val: list[int] | None = None) -> dict:
                  "total_chunks": (k - 1) // chunks + 1, "splits": {"train": f"0:{k}"}})
     (dst / "meta" / "info.json").write_text(json.dumps(info, indent=4))
     record = {"source": str(src), "source_episodes": n, "held_out": held_out,
-              "kept_source_episodes": train, "frames": offset}
+              "kept_source_episodes": train, "dropped": drop, "frames": offset}
     (dst / "meta" / "subset.json").write_text(json.dumps(record, indent=1))
     return record
 
@@ -104,6 +112,8 @@ def main():
     p.add_argument("--src", type=Path, required=True, help="LeRobot v2.1 dataset")
     p.add_argument("--dst", type=Path, required=True, help="training subset to create")
     p.add_argument("--val", help="space-separated held-out ids (default: every 10th from 5)")
+    p.add_argument("--drop", help="space-separated episode ids to leave out of training")
+    p.add_argument("--drop-failed", action="store_true", help="leave out the episodes SRC's audit FAILed")
     p.add_argument("--force", action="store_true", help="replace an existing --dst")
     a = p.parse_args()
     src, dst = a.src.expanduser().resolve(), a.dst.expanduser().resolve()
@@ -112,13 +122,24 @@ def main():
             raise SystemExit(f"{dst} exists (use --force to replace)")
         shutil.rmtree(dst)
     val = [int(x) for x in a.val.split()] if a.val else None
+    drop = [int(x) for x in a.drop.split()] if a.drop else []
+    if a.drop_failed:
+        from vla_common.dataset.audit import require
+        report = require(src, allow_fail=True)  # current, but a FAIL is the point here
+        if not report:
+            raise SystemExit(f"{src}: no current audit to drop from; run python -m vla_common.dataset.audit {src}")
+        drop += report["bad_episodes"]
+        print(f"dropping {len(report['bad_episodes'])} episodes SRC's audit FAILed")
     try:
-        r = subset(src, dst, val)
+        r = subset(src, dst, val, drop)
     except BaseException:
         shutil.rmtree(dst, ignore_errors=True)
         raise
     print(f"{dst}\n  {len(r['kept_source_episodes'])} of {r['source_episodes']} episodes, "
-          f"{r['frames']} frames\n  held out {len(r['held_out'])}: {' '.join(map(str, r['held_out']))}")
+          f"{r['frames']} frames\n  held out {len(r['held_out'])}: {' '.join(map(str, r['held_out']))}"
+          + (f"\n  dropped {len(r['dropped'])}" if r["dropped"] else ""))
+    from vla_common.dataset.audit import audit_after
+    audit_after(dst)
 
 
 if __name__ == "__main__":

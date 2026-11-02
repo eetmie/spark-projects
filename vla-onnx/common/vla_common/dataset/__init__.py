@@ -14,6 +14,9 @@ pipeline environments pin different versions.
     trim_variant.py    trim dead air off every episode
     to_v21.py          write a lossless, verified LeRobot v2.1 copy (for openpi and GR00T)
     from_native.py     raw kaivuri native sessions -> simplified LeRobot v2.1 (openpi, GR00T)
+    audit.py           recording faults (frozen sensors, stalled cameras, gaps) -> meta/audit.json;
+                       every conversion ends with it and every trainer requires it (--require)
+    subset_v21.py      training copy without the held-out episodes (--drop-failed: and the audit's FAILs)
 
 `split.py` and `view.py` are stdlib-only and are what `run_training.sh` calls; the other
 four need pandas and are the tools that actually rewrite a dataset. `to_v21` and

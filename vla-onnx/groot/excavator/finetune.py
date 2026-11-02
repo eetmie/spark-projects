@@ -89,6 +89,13 @@ def main():
     if "--output-dir" not in rest:
         sys.exit("--output-dir is required")
     out = pathlib.Path(rest[rest.index("--output-dir") + 1])
+    # Refuse a dataset that failed vla_common.dataset.audit or was never audited: a frozen IMU
+    # in the data looks like a model problem (2026-10-31). VLA_ALLOW_UNAUDITED=1 overrides.
+    if "--dataset-path" in rest:
+        sys.path.insert(0, str(HERE.parents[1] / "common"))
+        from vla_common.dataset.audit import require
+
+        require(pathlib.Path(rest[rest.index("--dataset-path") + 1]))
 
     if "--base-model-path" in rest:
         i = rest.index("--base-model-path") + 1

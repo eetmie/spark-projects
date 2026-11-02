@@ -101,6 +101,8 @@ def to_v3(src: Path, dst: Path | None = None) -> Path:
     check(src, dst)
     size = sum(f.stat().st_size for f in dst.rglob("*") if f.is_file())
     print(f"wrote {dst}: {size / 2**30:.2f} GB")
+    from vla_common.dataset.audit import audit_after
+    audit_after(dst)
     return dst
 
 

@@ -50,6 +50,15 @@ import config  # noqa: E402
 
 config.register()
 
+# Recording faults (a frozen IMU, a stalled camera) train a model that drives badly and looks
+# like a model problem; 2026-10-31 lost a weekend to one. Refuse a dataset that failed
+# vla_common.dataset.audit or was never audited (VLA_ALLOW_UNAUDITED=1 to override).
+if len(sys.argv) > 1 and sys.argv[1] in SCRIPTS:
+    sys.path.insert(0, str(HERE.parents[1] / "common"))
+    from vla_common.dataset.audit import require  # noqa: E402
+
+    require(pathlib.Path(os.environ["HF_LEROBOT_HOME"]) / config.DATASET)
+
 if len(sys.argv) < 2 or sys.argv[1] not in SCRIPTS:
     sys.exit(f"usage: run.py {{{','.join(SCRIPTS)}}} [args...]")
 script = OPENPI / "scripts" / SCRIPTS[sys.argv[1]]

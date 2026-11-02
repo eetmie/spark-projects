@@ -439,6 +439,8 @@ def main():
     print(f"{src} (v3.0) -> {dst} (v2.1)")
     for line in report:
         print("  " + line)
+    from vla_common.dataset.audit import audit_after
+    audit_after(dst)
 
 
 if __name__ == "__main__":

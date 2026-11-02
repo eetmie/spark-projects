@@ -403,9 +403,11 @@ def main():
     size = sum(f.stat().st_size for f in a.dst.rglob("*") if f.is_file())
     print(f"wrote {a.dst}: {len(results)} episodes, {total} frames, {size / 2**30:.2f} GB, "
           f"video mean |err| {np.mean(video_err):.2f} (worst episode {max(video_err):.2f})")
+    from vla_common.dataset.audit import audit_after
+    audit_after(a.dst)
     if a.v3:
         from vla_common.dataset.to_v3 import to_v3
-        to_v3(a.dst)
+        to_v3(a.dst)  # audits its own output
 
 
 if __name__ == "__main__":

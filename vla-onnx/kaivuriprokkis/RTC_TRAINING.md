@@ -608,6 +608,29 @@ in the run dir.
     cd vla-onnx/pi05 && third_party/openpi/.venv/bin/python excavator/score_heldout.py \
         --sweep checkpoints/pi05_excavator_rtc/digging_complete_rtc20_10k
 
+### Recording faults, and the dataset audit (2026-11-02)
+
+The weekend's π0.5 and the dual-camera X-VLA drove badly, and GR00T and the old X-VLA did not.
+The cause was hardware: a loose connector on the lift (boom) IMU. It froze the lift reading at
+exactly -45.06 deg, with fresh timestamps, so no age check noticed:
+- native run 4 (2026-10-30): from partway through episode 32 to the end, 75 of 107 episodes.
+  That is `digging_complete` episodes 132-206 and a quarter of what π0.5 trained on.
+- `sand-depth-002` (2026-11-02 17:12): all 8 episodes.
+- live, 2026-11-02: lift stuck at -18.9 deg for a whole 135 s GR00T run.
+Every other recording is clean (native runs 0+2, masi_dual_camera, dry_2, new_imu). Each affected
+dataset folder has a `DATA_FAULT.md`.
+
+`python -m vla_common.dataset.audit DATASET` now checks for this and for the other recording faults:
+frozen joints, stalled or dark cameras, timestamp gaps, video and data out of step, stale camera
+frames, short episodes, idle edges, joints that do not follow their command, and video timing
+against the slew command. It writes `meta/audit.json`.
+- Every conversion ends with it: from_native, to_v21, to_v3, merge, subset_v21.
+- The trainers refuse a dataset that FAILed or was never audited: X-VLA run_training.sh,
+  π0.5 run.py (train, norm-stats), GR00T finetune.py. `VLA_ALLOW_UNAUDITED=1` overrides.
+- A clean training copy: `subset_v21 --src SRC --dst DST --drop-failed`. score_heldout.py skips
+  held-out episodes the audit failed.
+It takes 15-50 s per dataset, with video, on the Spark.
+
 ## Not done
 
 1. **Delay distribution.** `uniform(0..12)` trains every d equally, but the board commits ~10-12
