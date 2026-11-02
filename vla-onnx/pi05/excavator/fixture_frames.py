@@ -9,6 +9,7 @@ dataset index. Frames are spread evenly over the dataset, so every task is cover
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 
@@ -48,7 +49,18 @@ print("tasks:", tasks)
 
 # Recorder provenance (native/session-*/provenance/manifest.json): every session must agree on the
 # cameras and controller profile the state and images depend on.
-sessions = sorted((pathlib.Path(ds.root) / "native").glob("session-*/provenance/manifest.json"))
+# A merged set (digging_complete) has no native/ of its own: KAIVURI_PROVENANCE_FROM names the
+# native sets it was merged from (comma-separated, names under HF_LEROBOT_HOME or paths), and their
+# sessions must agree in the same way.
+roots = [pathlib.Path(ds.root)]
+if not list((roots[0] / "native").glob("session-*/provenance/manifest.json")) and os.environ.get("KAIVURI_PROVENANCE_FROM"):
+    home = pathlib.Path(os.environ["HF_LEROBOT_HOME"])
+    roots = [home / r if not pathlib.Path(r).is_absolute() else pathlib.Path(r)
+             for r in os.environ["KAIVURI_PROVENANCE_FROM"].split(",") if r]
+    print(f"provenance from {[str(r) for r in roots]} (KAIVURI_PROVENANCE_FROM)")
+sessions = sorted(m for r in roots for m in (r / "native").glob("session-*/provenance/manifest.json"))
+if roots[0] != pathlib.Path(ds.root) and not sessions:
+    sys.exit(f"KAIVURI_PROVENANCE_FROM: no native/session-*/provenance/manifest.json under {roots}")
 provenance = None
 for path in sessions:
     m = json.loads(path.read_text())
