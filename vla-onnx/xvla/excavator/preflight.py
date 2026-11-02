@@ -48,10 +48,11 @@ def main() -> None:
     require(sys.version_info[:2] == (3, 12), f"Python 3.12 ({sys.version.split()[0]})")
 
     versions = {name: importlib.metadata.version(name) for name in ("torch", "lerobot", "transformers")}
-    require(versions["lerobot"] == "0.5.1", f"LeRobot 0.5.1 ({versions['lerobot']})")
-    require(versions["torch"].startswith("2.12.0+cu130"),
-            f"CUDA 13 PyTorch 2.12 ({versions['torch']})")
-    require(versions["transformers"] == "5.3.0", f"Transformers 5.3.0 ({versions['transformers']})")
+    # requirements-export.txt: one venv trains, scores and exports since 2026-11-02.
+    require(versions["lerobot"] == "0.6.1", f"LeRobot 0.6.1 ({versions['lerobot']})")
+    require(versions["torch"].startswith("2.11.0+cu130"),
+            f"CUDA 13 PyTorch 2.11 ({versions['torch']})")
+    require(versions["transformers"] == "5.5.4", f"Transformers 5.5.4 ({versions['transformers']})")
 
     import torch
     from lerobot.policies.xvla.configuration_xvla import XVLAConfig

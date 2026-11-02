@@ -84,8 +84,47 @@ if problems:
         sys.exit(2)
     print("\n   --allow-base given: shipping as a benchmark artefact.")
 PY
+elif [ -f "$BUNDLE/bundle.json" ]; then
+    # The current X-VLA exporter (vla-onnx/run_export.sh) writes bundle.json. The Orin's native
+    # TensorRT runtime (kaivuriprokkis-python, since 2026-10-29) refuses a bundle without the
+    # stock reference fixture, and from FP32 graphs it builds engines ~4.5x slower to run.
+    python3 - "$BUNDLE" "$ALLOW_BASE" <<'PY'
+import json, sys
+from pathlib import Path
+bundle, allow_base = Path(sys.argv[1]), sys.argv[2] == "1"
+b = json.loads((bundle / "bundle.json").read_text())
+fx = b.get("fixture") or {}
+print(f"   checkpoint : {b.get('checkpoint')}")
+print(f"   shapes     : chunk={b.get('chunk_size')} steps={b.get('num_denoising_steps')} "
+      f"state={b.get('real_state_dim')}/{b.get('max_state_dim')} "
+      f"action={b.get('real_action_dim')}/{b.get('max_action_dim')}  views={b.get('valid_views')}")
+print(f"   fps / tasks: {b.get('fps')} / {b.get('tasks')}")
+print(f"   fixture    : {fx.get('file')} ({fx.get('source')})")
+problems = []
+if not b.get("fps"):
+    problems.append("fps is missing -- the runtime has to guess the control rate")
+if not b.get("tasks"):
+    problems.append("no tasks recorded -- run_inference needs --task")
+if not (fx.get("file") and (bundle / fx["file"]).exists()):
+    problems.append("no reference fixture -- the Orin runtime refuses it (vla-onnx/xvla/reference.py)")
+if not list((bundle / "processor").glob("*normalizer*.safetensors")):
+    problems.append("no processor normalizer stats -- IDENTITY normalization")
+# FP16 weights are ~2 bytes a parameter; FP32 ~4.
+fp32 = [g["name"] for g in b.get("graphs", []) if g.get("params") and g["size_mb"] * 1e6 > 3 * g["params"]]
+if fp32:
+    problems.append(f"FP32 graphs ({', '.join(fp32[:4])}{'...' if len(fp32) > 4 else ''}) -- "
+                    "run vla-onnx/xvla/fp16_weights.py (run_export.sh does it)")
+if problems:
+    print("\n!! this bundle is not robot-ready:")
+    for p in problems:
+        print(f"     - {p}")
+    if not allow_base:
+        print("\n   Pass --allow-base to ship it anyway as a benchmark artefact. Never drive with one.")
+        sys.exit(2)
+    print("\n   --allow-base given: shipping as a benchmark artefact.")
+PY
 else
-    echo "!! no export_info.json — cannot tell what this bundle is." >&2
+    echo "!! neither export_info.json nor bundle.json — cannot tell what this bundle is." >&2
     [ "$ALLOW_BASE" = 1 ] || exit 1
 fi
 
@@ -95,9 +134,9 @@ echo ">> $BUNDLE  ->  $HOST:$DEST  ($(du -sh "$BUNDLE" | cut -f1))"
 
 ssh "$HOST" "mkdir -p $DEST"
 rsync -avh --partial --progress \
-      --exclude 'trt_cache/' --exclude 'ctx/' \
+      --exclude 'trt_cache/' --exclude 'trt_native_cache/' --exclude 'ctx/' \
       --exclude '*.engine' --exclude '*.plan' --exclude '*.profile' \
-      --exclude '__pycache__/' --exclude '_meta_*.json' --exclude 'parity_reference.npz' \
+      --exclude '__pycache__/' --exclude '_meta_*.json' \
       "$BUNDLE/" "$HOST:$DEST/"
 
 echo
@@ -105,5 +144,9 @@ echo ">> verifying on $HOST ..."
 ssh "$HOST" "cd $DEST && sha256sum -c MANIFEST.sha256 --quiet && echo '   MANIFEST OK — all files match'"
 
 echo
-echo "Bundle is on the board. Engines build on FIRST run and are cached (~60 s each):"
-echo "  python -m bench ort-split --bundle $DEST --precision fp16 --projectors gpu --iobinding"
+echo "Bundle is on the board. Engines build on the first load and are cached in the bundle:"
+if [ -f "$BUNDLE/bundle.json" ] && [ ! -f "$BUNDLE/export_info.json" ]; then
+    echo "  cd ~/kaivuriprokkis-python && .venv/bin/python -m lerobot_vla.run_inference --split-dir ~/$DEST --synthetic"
+else
+    echo "  python -m bench ort-split --bundle $DEST --precision fp16 --projectors gpu --iobinding"
+fi

@@ -85,13 +85,16 @@ already ship `[lift, tilt, scoop]`. `action` and `feedback.*` keep every channel
 
 | env | lerobot | torch | used by |
 |---|---|---|---|
-| `.venv-lerobot051` | 0.5.1 | 2.12.0+cu130 | X-VLA fine-tune |
-| `.venv-lerobot061` | 0.6.1 | 2.11.0+cu130 | X-VLA export |
+| `.venv-lerobot061` | 0.6.1 | 2.11.0+cu130 | X-VLA fine-tune, scoring, export |
+| `.venv-lerobot051` | 0.5.1 | 2.12.0+cu130 | retired (trained runs up to 2026-11-02) |
 
-lerobot 0.6.1 requires `torch>=2.7,<2.12` while the 0.5.1 stack pins 2.12.0, so these are two
-venvs on purpose. `xvla/excavator/setup.sh` builds both from `xvla/requirements.txt` and
-`xvla/requirements-export.txt`. `vla_common` is installed into both (`pip install -e common`),
-which is why it carries no torch or lerobot pin. GR00T and π0.5 have their own venvs
+Since 2026-11-02 one venv does everything X-VLA, so a run is trained, scored, exported and
+fixture-checked by the same implementation. It used to train in 0.5.1 (torch 2.12) and export
+in 0.6.1 (which needs torch < 2.12); on the dual-camera checkpoint the two give the same chunk
+(max |d| 3e-6), and 0.6.1 loads 0.5.1 checkpoints. `xvla/excavator/setup.sh` builds it from
+`xvla/requirements-export.txt`; `xvla/requirements.txt` is the retired 0.5.1 pin set.
+`vla_common` is installed into it (`pip install -e common`), which is why it carries no torch
+or lerobot pin. GR00T and π0.5 have their own venvs
 (`groot/.venv-groot17`, `pi05/third_party/openpi/.venv`).
 
 ## Paths
@@ -104,6 +107,6 @@ imports `vla_common.paths`. Both resolve from their own location and honour over
 | `VLA_ONNX` | this directory | pipeline root |
 | `VLA_DATASETS` | `~/Desktop` | recorded excavator datasets — **source data, the only copy** |
 | `VLA_BUNDLES` | `~/bundles` | finished bundles, staged for `ship_bundle.sh` |
-| `VENV_LEROBOT051` / `VENV_LEROBOT061` | as above | the two environments |
+| `VENV_LEROBOT061` / `VENV_LEROBOT051` | as above | the X-VLA venv / the retired one |
 
 A recording elsewhere (for example `~/datasets/masi_dual_camera`) is passed as a full path.

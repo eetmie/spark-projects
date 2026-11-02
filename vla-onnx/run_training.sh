@@ -133,7 +133,11 @@ done
 [ "$MODEL" = xvla ] || die "--model $MODEL: only X-VLA is left here.
    SmolVLA and EVO1 were removed; git checkout archive/lerobot-playbooks-2026-10-29 has them."
 
-VENV=$VENV_LEROBOT051
+# lerobot 0.6.1 since 2026-11-02 -- the same venv scores and exports, so a run is trained,
+# scored, exported and fixture-checked by one X-VLA implementation. 0.5.1 and 0.6.1 give the
+# same chunk on the same inputs (max |d| 3e-6 on the dual-camera checkpoint), and 0.6.1 loads
+# 0.5.1 checkpoints (it remaps the vendored Florence-2 keys), so older runs still export.
+VENV=$VENV_LEROBOT061
 PLAYBOOK=$VLA_ONNX/xvla
 PY=$VENV/bin/python
 [ -x "$PY" ] || die "no python in $VENV -- run xvla/excavator/setup.sh first"
@@ -219,8 +223,10 @@ CMD=("$VENV/bin/lerobot-train"
      --batch_size="$BATCH"
      --num_workers="$WORKERS"
      --log_freq="$LOG_FREQ"
-     --save_freq="$SAVE_FREQ"
-     --eval_freq=0)
+     --save_freq="$SAVE_FREQ")
+# No eval flag: 0.5.1's --eval_freq=0 is gone in 0.6.1 (now --env_eval_freq), and simulator
+# eval only runs with an --env, which an excavator run never has. Held-out scoring is
+# eval/compare.py and eval/curve.py.
 [ -n "$TRAIN_EPS" ] && CMD+=(--dataset.episodes="$TRAIN_EPS")
 # scheduler_decay_steps defaults to 30000 and the scheduler only scales it DOWN to fit a
 # shorter run. Past 30000 the LR sits at its floor for every extra step, so stretch the

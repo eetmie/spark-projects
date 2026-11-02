@@ -14,8 +14,8 @@
 VLA_ONNX=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SPARK_PROJECTS=$(cd "$VLA_ONNX/.." && pwd)
 
-# The two X-VLA environments. lerobot 0.5.1 is the venv X-VLA fine-tunes in; 0.6.1 is
-# what the X-VLA export runs in. They are deliberately NOT interchangeable — see vla-onnx/README.md.
+# The X-VLA environment: lerobot 0.6.1 trains, scores and exports (since 2026-11-02).
+# VENV_LEROBOT051 is the retired 0.5.1 training venv, kept only to reproduce older runs.
 VENV_LEROBOT051=${VENV_LEROBOT051:-$VLA_ONNX/.venv-lerobot051}
 VENV_LEROBOT061=${VENV_LEROBOT061:-$VLA_ONNX/.venv-lerobot061}
 

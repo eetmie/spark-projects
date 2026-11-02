@@ -105,8 +105,8 @@ recording is about 10 epochs.
 ## Scoring (needs held-out episodes)
 
 ```bash
-../.venv-lerobot051/bin/python ../eval/compare.py --horizons 0.5 --ckpt xvla=<run>/checkpoints/last
-../.venv-lerobot051/bin/python ../eval/curve.py --sweep outputs/<sweep>
+../.venv-lerobot061/bin/python ../eval/compare.py --horizons 0.5 --ckpt xvla=<run>/checkpoints/last
+../.venv-lerobot061/bin/python ../eval/curve.py --sweep outputs/<sweep>
 ```
 
 The eval harness is model-agnostic and reads the split from each checkpoint's own
@@ -124,8 +124,18 @@ can act on.
 
 ## Environments
 
-Trains in `.venv-lerobot051` (lerobot 0.5.1), exports in `.venv-lerobot061` (0.6.1);
-`run_export.sh` picks the right one. They cannot be merged — see `../README.md`.
+One venv, `.venv-lerobot061` (lerobot 0.6.1), trains, scores and exports since 2026-11-02;
+the 0.5.1 training venv is retired (`../README.md`, Environments).
+
+## Export and ship
+
+`../run_export.sh --run outputs/<sweep>/<run> --step best|last|N [--dest DIR]` writes what the
+Orin's native TensorRT runtime (kaivuriprokkis-python, since 2026-10-29) loads:
+FP32 split export and parity (`DIR.fp32`, a work dir), the stock reference fixture
+(`reference.py`, the board's load gate), mixed FP16 (`fp16_weights.py`) into `DIR` and parity
+again. `../../ship_bundle.sh DIR <host>` refuses a bundle without the fixture or with FP32
+graphs. From FP32 graphs the Orin ran the dual-camera model at 1725 ms a chunk against
+~380 ms for FP16.
 
 ## Status
 

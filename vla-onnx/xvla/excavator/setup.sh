@@ -8,20 +8,12 @@ source "$HERE/../../paths.sh"
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
-VENV=$VENV_LEROBOT051/bin
+VENV=$VENV_LEROBOT061/bin
 
-# Two environments that cannot be merged: lerobot 0.5.1 / torch 2.12 trains, lerobot
-# 0.6.1 / torch 2.11 exports (it requires torch < 2.12).
-if [ ! -x "$VENV/python" ]; then
-    echo "creating the training environment at $VENV_LEROBOT051"
-    python3 -m venv "$VENV_LEROBOT051"
-    "$VENV/python" -m pip install --upgrade pip
-    "$VENV/python" -m pip install -r "$ROOT/requirements.txt" \
-        --extra-index-url https://download.pytorch.org/whl/cu130
-fi
-
+# One environment: lerobot 0.6.1 / torch 2.11 trains, scores and exports (2026-11-02). The
+# old 0.5.1 / torch 2.12 training venv (requirements.txt) is retired; 0.6.1 needs torch < 2.12.
 if [ ! -x "$VENV_LEROBOT061/bin/python" ]; then
-    echo "creating the export environment at $VENV_LEROBOT061"
+    echo "creating the X-VLA environment at $VENV_LEROBOT061"
     python3 -m venv "$VENV_LEROBOT061"
     "$VENV_LEROBOT061/bin/python" -m pip install --upgrade pip "setuptools<82" wheel
     "$VENV_LEROBOT061/bin/python" -m pip install -r "$ROOT/requirements-export.txt" \
