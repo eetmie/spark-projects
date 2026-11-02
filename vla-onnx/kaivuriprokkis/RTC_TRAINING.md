@@ -580,6 +580,34 @@ works best. On the Orin, ~10 rows are committed per plan.
 Worth borrowing later: correlated training noise (Not done, item 3), Mode A as a fallback for
 plain models (X-VLA), and a short anchor on top of Mode C's prefix.
 
+### Held-out scores for the weekend run (2026-11-02)
+
+The run finished on 2026-11-02 at 16:24 after one restart (batch 24 from global step 2500).
+`pi05/excavator/score_heldout.py` is compare.py's metric for OpenPI checkpoints. It reads the
+source recording and the held-out episodes from the checkpoint's `assets/<dataset>/` plus that
+dataset's `meta/subset.json`. All checkpoints get the same noise, sampled at RTC delay 0. Batched
+inference matches `policy.infer` within bf16 rounding (max 0.005).
+
+On 31 held-out episodes, 1030 points at stride 15 (885 sand, 145 rock), disp_err (lower is better):
+
+| checkpoint (global) | 0.33 s | 1.0 s | 1.5 s | MAE 1.0 s | move_ratio |
+|---|---|---|---|---|---|
+| 2500 | 0.0665 | 0.1709 | 0.2337 | 0.2003 | 0.99 |
+| 5000 | 0.0618 | 0.1567 | 0.2141 | 0.1849 | 0.97 |
+| 7500 | 0.0548 | 0.1419 | 0.1962 | 0.1691 | 0.98 |
+| **9999** | **0.0505** | **0.1295** | **0.1808** | **0.1566** | 0.98 |
+| zero-action | 0.1040 | 0.3105 | 0.4573 | 0.3158 | 0 |
+| mean-action | 0.1079 | 0.3156 | 0.4580 | 0.3292 | 0.20 |
+
+The error falls with every checkpoint, on every joint and at every horizon, and the final one is
+best, at ~40 % of the baselines. There is no sign of overfitting yet, so a longer run might
+still gain. Export 9999 (`checkpoints/pi05_excavator_rtc/digging_complete_rtc20_10k-from-2500/7499`).
+Full table: `pi05/runs/heldout_scores_digging_complete_rtc20_10k.log`, plus `heldout_scores.json`
+in the run dir.
+
+    cd vla-onnx/pi05 && third_party/openpi/.venv/bin/python excavator/score_heldout.py \
+        --sweep checkpoints/pi05_excavator_rtc/digging_complete_rtc20_10k
+
 ## Not done
 
 1. **Delay distribution.** `uniform(0..12)` trains every d equally, but the board commits ~10-12
