@@ -14,9 +14,6 @@
 # curve.json is missing or unreadable this EXPORTS NOTHING and says so -- a bundle
 # silently built from the wrong checkpoint is worse than no bundle.
 #
-# THE EXPORT VENV IS NOT THE TRAINING VENV. X-VLA trains in .venv-lerobot051 and
-# exports in .venv-lerobot061 (see the environments table in README.md). Getting this
-# backwards produces an import error deep in the exporter rather than at the top.
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)

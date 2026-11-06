@@ -17,7 +17,7 @@ Per take:
     arm                   FK joint chain + bucket tip, base frame, with the tip's trail
     constants             fields that never change in the take (text panel)
 
-Needs rerun-sdk 0.26 + numpy (the lerobot 0.5.1 venv has both, and its viewer binary).
+Needs rerun-sdk 0.26 + numpy (the lerobot 0.6.1 venv has both, and its viewer binary).
 """
 
 from __future__ import annotations

@@ -133,7 +133,7 @@ done
 [ "$MODEL" = xvla ] || die "--model $MODEL: only X-VLA is left here.
    SmolVLA and EVO1 were removed; git checkout archive/lerobot-playbooks-2026-10-29 has them."
 
-VENV=$VENV_LEROBOT051
+VENV=$VENV_LEROBOT061
 PLAYBOOK=$VLA_ONNX/xvla
 PY=$VENV/bin/python
 [ -x "$PY" ] || die "no python in $VENV -- run xvla/excavator/setup.sh first"
@@ -196,9 +196,11 @@ CKPT=${INIT_FROM:-$PLAYBOOK/models/xvla-base-excavator}
    Run xvla/excavator/fetch_checkpoint.sh, then prepare_checkpoint.py."
 # STATE=MEAN_STD is not optional: xvla-base ships STATE=IDENTITY and X-VLA does not
 # normalise proprio itself, so without it the joint angles go in as raw degrees.
+# ACTION=IDENTITY (xvla-base ships MEAN_STD): the loss sees actions in dataset units, so
+# keep every action channel near unit scale in the recording.
 MODEL_FLAGS=(--policy.path="$CKPT"
              --policy.action_mode=auto
-             --policy.normalization_mapping='{"VISUAL":"IDENTITY","STATE":"MEAN_STD","ACTION":"MEAN_STD"}'
+             --policy.normalization_mapping='{"VISUAL":"IDENTITY","STATE":"MEAN_STD","ACTION":"IDENTITY"}'
              --policy.dtype=bfloat16)
 
 # --- assemble ------------------------------------------------------------------------
@@ -219,8 +221,7 @@ CMD=("$VENV/bin/lerobot-train"
      --batch_size="$BATCH"
      --num_workers="$WORKERS"
      --log_freq="$LOG_FREQ"
-     --save_freq="$SAVE_FREQ"
-     --eval_freq=0)
+     --save_freq="$SAVE_FREQ")
 [ -n "$TRAIN_EPS" ] && CMD+=(--dataset.episodes="$TRAIN_EPS")
 # scheduler_decay_steps defaults to 30000 and the scheduler only scales it DOWN to fit a
 # shorter run. Past 30000 the LR sits at its floor for every extra step, so stretch the

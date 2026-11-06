@@ -14,8 +14,15 @@ losses * in_episode_bound`), so chunks overhanging the end contribute no gradien
 protects the tail. It does not protect the head: an episode's opening frames are real,
 fully supervised, and wrong.
 
-    python make_trim_variant.py --src ~/Desktop/masi_digging --dst datasets/masi_digging_trim
-    python make_trim_variant.py --src ... --dst ... --apply
+    python -m vla_common.dataset.trim_variant --src ~/Desktop/masi_digging --dst datasets/masi_digging_trim
+    python -m vla_common.dataset.trim_variant --src ... --dst ... --apply
+
+    # Any robot, no state needed: first..last command, 5 s lead-in, 1 s tail, actions /100
+    python -m vla_common.dataset.trim_variant --src ... --dst ... --bounds command \
+        --before 5 --after 1 --action-scale 0.01 --apply
+
+Keep --after >= one chunk: X-VLA trains on padded chunk steps, and LeRobot pads with the
+episode's last frame, so a cut right at the last command teaches "keep moving".
 
 Report-only by default -- it prints what it would cut and changes nothing.
 
@@ -91,7 +98,13 @@ def episode_bounds(action, state, fps, action_th, vel_th, smooth):
     return int(start), int(commanded[-1])
 
 
-def plan(src: Path, action_th, vel_th, smooth, exclude):
+def command_bounds(action, action_th):
+    """(first, last) frame with any channel commanded, or None if silent."""
+    c = np.where((np.abs(action) > action_th).any(axis=1))[0]
+    return (int(c[0]), int(c[-1])) if len(c) else None
+
+
+def plan(src: Path, action_th, vel_th, smooth, exclude, bounds="motion", before=0.0, after=0.0):
     """Per-episode trim plan, computed from the source data."""
     info = json.loads((src / "meta" / "info.json").read_text())
     fps = float(info.get("fps", FPS_FALLBACK))
@@ -106,15 +119,15 @@ def plan(src: Path, action_th, vel_th, smooth, exclude):
         if ep in exclude:
             rows.append(dict(ep=ep, n=n, start=0, end=n - 1, keep=0, reason="excluded"))
             continue
-        b = episode_bounds(
-            np.stack(d["action"].values),
-            np.stack(d["observation.state"].values),
-            fps, action_th, vel_th, smooth,
-        )
+        action = np.stack(d["action"].values)
+        b = (command_bounds(action, action_th) if bounds == "command" else
+             episode_bounds(action, np.stack(d["observation.state"].values),
+                            fps, action_th, vel_th, smooth))
         if b is None:
             rows.append(dict(ep=ep, n=n, start=0, end=n - 1, keep=0, reason="silent"))
             continue
-        s, e = b
+        s = max(0, b[0] - round(before * fps))
+        e = min(n - 1, b[1] + round(after * fps))
         rows.append(dict(ep=ep, n=n, start=s, end=e, keep=e - s + 1, reason=""))
     return pd.DataFrame(rows), data, info, fps
 
@@ -160,7 +173,7 @@ def stat_block(values, prefix, out):
         out[f"stats/{prefix}/{name}"] = np.quantile(v, q, axis=0).tolist()
 
 
-def apply_trim(src: Path, dst: Path, pl, data, info, fps, min_frames, force):
+def apply_trim(src: Path, dst: Path, pl, data, info, fps, min_frames, force, action_scale=1.0):
     if dst.exists():
         if not force:
             raise SystemExit(f"{dst} exists -- pass --force to replace it")
@@ -187,6 +200,8 @@ def apply_trim(src: Path, dst: Path, pl, data, info, fps, min_frames, force):
         d["frame_index"] = np.arange(n, dtype=d["frame_index"].dtype)
         d["timestamp"] = (np.arange(n) / fps).astype(d["timestamp"].dtype)
         d["index"] = np.arange(cursor, cursor + n, dtype=d["index"].dtype)
+        if action_scale != 1.0:
+            d["action"] = [np.asarray(a, dtype=np.float32) * np.float32(action_scale) for a in d["action"]]
         out_rows.append(d)
 
         m = src_eps.loc[ep].to_dict()
@@ -220,7 +235,12 @@ def apply_trim(src: Path, dst: Path, pl, data, info, fps, min_frames, force):
 
     shutil.copy2(src / "meta" / "tasks.parquet", dst / "meta" / "tasks.parquet")
 
-    info = dict(info)
+    info = json.loads(json.dumps(info))
+    if action_scale != 1.0:
+        # The unit change has to reach the robot side: it is in the names every reader sees.
+        names = info["features"]["action"].get("names")
+        if names:
+            info["features"]["action"]["names"] = [f"{n}*{action_scale:g}" for n in names]
     info["total_episodes"] = new_ep
     info["total_frames"] = int(cursor)
     if isinstance(info.get("splits"), dict):
@@ -271,22 +291,30 @@ def main():
                    help="drop episodes shorter than this after trimming; keep >= the "
                         "policy chunk size, since a shorter episode cannot fill one "
                         "(default 50)")
+    p.add_argument("--bounds", choices=("motion", "command"), default="motion",
+                   help="motion: the excavator rule above (needs joint state); "
+                        "command: first..last frame any action channel is commanded")
+    p.add_argument("--before", type=float, default=0.0, help="seconds kept before the start")
+    p.add_argument("--after", type=float, default=0.0, help="seconds kept after the end")
+    p.add_argument("--action-scale", type=float, default=1.0,
+                   help="multiply every action by this, e.g. 0.01 for percent -> -1..1")
     p.add_argument("--exclude-episodes", type=int, nargs="*", default=[],
                    help="source episode indices to skip entirely, e.g. a run of dirty "
                         "episodes that do not represent the task")
     args = p.parse_args()
 
     pl, data, info, fps = plan(args.src, args.action_th, args.vel_th, args.smooth,
-                               set(args.exclude_episodes))
+                               set(args.exclude_episodes), args.bounds, args.before, args.after)
     print(f"source {args.src}  ({len(pl)} episodes, {int(pl.n.sum())} frames, {fps:g} fps)")
-    print(f"thresholds: action>{args.action_th}, speed>{args.vel_th} deg/s, "
-          f"smooth {args.smooth} frames\n")
+    print(f"bounds {args.bounds}, +{args.before:g} s before / +{args.after:g} s after, "
+          f"action>{args.action_th}" + (f", speed>{args.vel_th} deg/s, smooth {args.smooth} frames"
+                                        if args.bounds == "motion" else "") + "\n")
     report(pl, fps, args.min_frames)
 
     if not args.apply:
         print("\n(report only -- pass --apply to write the variant)")
         return
-    apply_trim(args.src, args.dst, pl, data, info, fps, args.min_frames, args.force)
+    apply_trim(args.src, args.dst, pl, data, info, fps, args.min_frames, args.force, args.action_scale)
 
 
 if __name__ == "__main__":

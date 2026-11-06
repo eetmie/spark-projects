@@ -2,9 +2,8 @@
 share them.
 
 These operate on the parquet + meta layout directly rather than through
-`LeRobotDataset`, which is why they are safe in `vla_common`: the dataset class API
-moved between lerobot 0.5.1 and 0.6.1 (16 -> 21 `__init__` parameters) and the two
-pipeline environments pin different versions.
+`LeRobotDataset`, whose API moves between lerobot releases (16 -> 21 `__init__`
+parameters from 0.5.1 to 0.6.1).
 
     split.py           derive the train / held-out episode split from meta/info.json
     view.py            resolve (and freshen) a camera-subset view for a training run
@@ -12,6 +11,7 @@ pipeline environments pin different versions.
     state_variant.py   drop channels from observation.state (a sensor the policy must not see)
     retask.py          rename the instruction string, in place
     trim_variant.py    trim dead air off every episode
+    transcode.py       re-encode videos as H.264 (AV1 recordings do not decode here)
     to_v21.py          write a lossless, verified LeRobot v2.1 copy (for openpi and GR00T)
     from_native.py     raw kaivuri native sessions -> simplified LeRobot v2.1 (openpi, GR00T)
 

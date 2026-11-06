@@ -14,9 +14,7 @@
 VLA_ONNX=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SPARK_PROJECTS=$(cd "$VLA_ONNX/.." && pwd)
 
-# The two X-VLA environments. lerobot 0.5.1 is the venv X-VLA fine-tunes in; 0.6.1 is
-# what the X-VLA export runs in. They are deliberately NOT interchangeable — see vla-onnx/README.md.
-VENV_LEROBOT051=${VENV_LEROBOT051:-$VLA_ONNX/.venv-lerobot051}
+# The X-VLA environment (lerobot 0.6.1): fine-tune, eval and export.
 VENV_LEROBOT061=${VENV_LEROBOT061:-$VLA_ONNX/.venv-lerobot061}
 
 # Recorded excavator datasets. Not in git and not derived — the only copy of the
@@ -26,4 +24,4 @@ VLA_DATASETS=${VLA_DATASETS:-$HOME/Desktop}
 # Where finished bundles are collected before shipping to the robot.
 VLA_BUNDLES=${VLA_BUNDLES:-$HOME/bundles}
 
-export VLA_ONNX SPARK_PROJECTS VENV_LEROBOT051 VENV_LEROBOT061 VLA_DATASETS VLA_BUNDLES
+export VLA_ONNX SPARK_PROJECTS VENV_LEROBOT061 VLA_DATASETS VLA_BUNDLES

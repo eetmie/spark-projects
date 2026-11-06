@@ -47,6 +47,15 @@ The export parity gate compares the bundle against the torch checkpoint and does
 held-out data. For reference, the bundle that drove well on the machine was step 17500 of a
 20000-step full fine-tune.
 
+### AV1 recordings
+
+The torchcodec here cannot decode AV1 (newer LeRobot recorders write it); training dies on
+the first batch. Convert once, then train on the copy:
+
+```bash
+../.venv-lerobot061/bin/python -m vla_common.dataset.transcode --src <av1 dataset> --dst <h264 copy>
+```
+
 ### Two cameras
 
 Camera keys and their order come from the checkpoint's `observation.images.*`; the bundle
@@ -77,8 +86,10 @@ All argued in the `xvla` arm of `../run_training.sh`:
   dataset's real action dim, pads to 20 so the pretrained head loads, and computes loss on
   the real dims only.
 - **`STATE=MEAN_STD`** — `xvla-base` ships `STATE=IDENTITY` and X-VLA does not normalize
-  proprio itself, so joint angles in degrees would go in raw. ACTION stays `MEAN_STD`, which
-  is what the pretrained head was trained with.
+  proprio itself, so joint angles in degrees would go in raw.
+- **`ACTION=IDENTITY`** (since 2026-11-06; earlier runs used `MEAN_STD`, which `xvla-base`
+  ships) — the loss sees actions in dataset units, so a channel with a large range
+  dominates it. Keep action channels near unit scale in the recording.
 - **`dtype=bfloat16`** — the model card's setting; native on GB10.
 - **`chunk_size=30`** — what the base checkpoint and the Orin runtime use. Chunk length is
   part of the deployment contract (it sets the denoise sequence length and X-VLA cannot
@@ -105,8 +116,8 @@ recording is about 10 epochs.
 ## Scoring (needs held-out episodes)
 
 ```bash
-../.venv-lerobot051/bin/python ../eval/compare.py --horizons 0.5 --ckpt xvla=<run>/checkpoints/last
-../.venv-lerobot051/bin/python ../eval/curve.py --sweep outputs/<sweep>
+../.venv-lerobot061/bin/python ../eval/compare.py --horizons 0.5 --ckpt xvla=<run>/checkpoints/last
+../.venv-lerobot061/bin/python ../eval/curve.py --sweep outputs/<sweep>
 ```
 
 The eval harness is model-agnostic and reads the split from each checkpoint's own
@@ -124,8 +135,9 @@ can act on.
 
 ## Environments
 
-Trains in `.venv-lerobot051` (lerobot 0.5.1), exports in `.venv-lerobot061` (0.6.1);
-`run_export.sh` picks the right one. They cannot be merged — see `../README.md`.
+`.venv-lerobot061` (lerobot 0.6.1) trains, scores and exports. Runs trained before
+2026-11-06 came from lerobot 0.5.1; 0.6.1 loads them (it remaps the old vendored Florence-2
+weight names).
 
 ## Status
 

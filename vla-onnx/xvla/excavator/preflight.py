@@ -48,10 +48,10 @@ def main() -> None:
     require(sys.version_info[:2] == (3, 12), f"Python 3.12 ({sys.version.split()[0]})")
 
     versions = {name: importlib.metadata.version(name) for name in ("torch", "lerobot", "transformers")}
-    require(versions["lerobot"] == "0.5.1", f"LeRobot 0.5.1 ({versions['lerobot']})")
-    require(versions["torch"].startswith("2.12.0+cu130"),
-            f"CUDA 13 PyTorch 2.12 ({versions['torch']})")
-    require(versions["transformers"] == "5.3.0", f"Transformers 5.3.0 ({versions['transformers']})")
+    require(versions["lerobot"] == "0.6.1", f"LeRobot 0.6.1 ({versions['lerobot']})")
+    require(versions["torch"].startswith("2.11.0+cu130"),
+            f"CUDA 13 PyTorch 2.11 ({versions['torch']})")
+    require(versions["transformers"] == "5.5.4", f"Transformers 5.5.4 ({versions['transformers']})")
 
     import torch
     from lerobot.policies.xvla.configuration_xvla import XVLAConfig
@@ -97,8 +97,11 @@ def main() -> None:
         require(info_path.is_file(), f"dataset metadata exists at {dataset_root}")
         info = json.loads(info_path.read_text())
         features = info["features"]
-        require(shape(features, "observation.state") == (3,), "state contract is 3-D")
-        require(shape(features, "action") == (4,), "action contract is 4-D")
+        state, action = shape(features, "observation.state"), shape(features, "action")
+        require(len(state) == 1 and state[0] <= config.get("max_state_dim", 20),
+                f"state {state} fits max_state_dim {config.get('max_state_dim', 20)}")
+        require(len(action) == 1 and action[0] <= config.get("max_action_dim", 20),
+                f"action {action} fits max_action_dim {config.get('max_action_dim', 20)}")
         for camera in view_mod.source_cameras(dataset_root):
             require(features[camera]["dtype"] == "video",
                     f"camera contract {camera} is video")

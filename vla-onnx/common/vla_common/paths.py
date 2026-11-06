@@ -36,13 +36,7 @@ def dataset(name: str) -> Path:
     return VLA_DATASETS / name
 
 
-# The two pipeline environments, mirroring paths.sh:22-23. They lived only in the
-# shell until now, so any Python that needed to exec `lerobot-train` had to re-derive
-# them or read the environment by hand. They are NOT interchangeable: lerobot 0.6.1
-# requires torch>=2.7,<2.12 and the 0.5.1 stack pins 2.12.0. Picking the wrong one
-# produces a plausible run in the wrong stack, which silently destroys the
-# same-stack basis that makes a cross-model comparison a claim about models.
-VENV_LEROBOT051 = _env_path("VENV_LEROBOT051", VLA_ONNX / ".venv-lerobot051")
+# The pipeline environment, mirroring paths.sh.
 VENV_LEROBOT061 = _env_path("VENV_LEROBOT061", VLA_ONNX / ".venv-lerobot061")
 
 

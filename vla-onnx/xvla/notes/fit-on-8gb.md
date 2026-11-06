@@ -114,7 +114,7 @@ Same host prep as the benchmark repo (`jetson-orin-nano-vla/scripts/`). The venv
 python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "lerobot[xvla]==0.6.1"          # 0.5.1 has no xvla policy
+pip install "lerobot[xvla]==0.6.1"
 pip install onnx onnxruntime-gpu==1.24.0 --extra-index-url https://pypi.jetson-ai-lab.io/sbsa/cu130
 pip install --ignore-installed "numpy==2.2.6" "scipy>=1.14"
 ```

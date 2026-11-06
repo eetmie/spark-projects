@@ -570,11 +570,9 @@ def _dataset_tasks(checkpoint: Path) -> list[str]:
         return ([str(t) for t in col["task"]] if "task" in col.columns
                 else [str(i) for i in col.index])
     except Exception as exc:
-        # LOUD, not silent. This export venv is deliberately a different one from the
-        # training venv (lerobot 0.6.1 vs 0.5.1) and carries neither pandas nor pyarrow,
-        # so it cannot read tasks.parquet at all -- a `return []` here is indistinguishable
-        # from "this is a base checkpoint with no task", and quietly ships a bundle the
-        # runtime will refuse to launch. Resolve them in the training venv and pass --task.
+        # LOUD, not silent. A `return []` here is indistinguishable from "this is a base
+        # checkpoint with no task", and quietly ships a bundle the runtime will refuse to
+        # launch. Pass --task instead.
         print(f"!! cannot read {tasks_f}: {type(exc).__name__}: {exc}\n"
               f"   pass the instruction(s) explicitly with --task instead.")
         return []
