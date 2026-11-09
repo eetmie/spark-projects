@@ -6,8 +6,9 @@ bundle for the Orin Nano. Fit on the 8 GB Orin is settled in
 peak RSS. The stock checkpoint cannot drive an excavator (it is a 20-dim `ee6d` arm
 policy), hence this fine-tune.
 
-Training goes through `../run_training.sh`, export through `../run_export.sh`; this
-directory holds the X-VLA-specific parts (checkpoint prep, exporter, parity).
+Training goes through `../run_training.sh`, export through `../run_export.sh`, which runs
+[jetson-orin-nano-vla](https://github.com/eetmie/jetson-orin-nano-vla)'s exporter; this
+directory holds the X-VLA-specific parts (checkpoint prep, training settings).
 
 ## Run
 
@@ -43,9 +44,17 @@ Without held-out episodes there is no curve, so there is no "best" step:
 ../run_export.sh --run xvla/outputs/<sweep>/<run> --step last      # or --step 17500
 ```
 
-The export parity gate compares the bundle against the torch checkpoint and does not need
-held-out data. For reference, the bundle that drove well on the machine was step 17500 of a
+The parity gate (the bundle's stock-policy fixture, checked by the Jetson's `./run.sh`) does
+not need held-out data. For reference, the bundle that drove well on the machine was step 17500 of a
 20000-step full fine-tune.
+
+### Export
+
+`run_export.sh` picks the step and runs jetson-orin-nano-vla's `export.sh` on it: mixed-FP16
+graphs, the stock-policy fixture, and the trained task list and fps read from the training
+dataset in `train_config.json`. Dry-run it on the Orin with that repo's `./run.sh <bundle>`,
+which checks the engines against the fixture before benchmarking. `model_spec.json` lists any
+value the exporter had to default (`defaulted`); such a bundle is not robot-ready.
 
 ### AV1 recordings
 
@@ -61,8 +70,9 @@ the first batch. Convert once, then train on the copy:
 Camera keys and their order come from the checkpoint's `observation.images.*`; the bundle
 records them and the Orin runtime refuses a mismatch. The exporter sizes the vision engine
 to the checkpoint's camera count (`--views` overrides), so a 2-camera fine-tune exports at 2
-views. A 1-view bundle cannot serve a 2-view runtime, and the reverse. No 2-camera X-VLA
-bundle has been exported or run on the Orin yet; treat the first one as the test.
+views. A 1-view bundle cannot serve a 2-view runtime, and the reverse. First 2-camera run
+(2026-11-09, masi_dual_camera step 15000): 307 ms, parity PASS, loads in kaivuriprokkis
+`python`.
 
 ## The stock checkpoint cannot train on this data unmodified
 
@@ -143,7 +153,5 @@ weight names).
 
 - Full fine-tune is the deployed recipe; X-VLA drives the excavator on single-camera data
   and on the new-IMU recordings.
-- Bundle contract (`bundle_contract.py`) is vendored byte-for-byte into
-  `kaivuriprokkis-python` (`runtime/vendor/xvla_bundle_contract.py`, SHA recorded in its header).
-  Re-sync it there when this file changes.
-- Open: a 2-camera export and Orin run (above).
+- Bundle contract: jetson-orin-nano-vla `export/xvla/bundle_contract.py`, vendored into
+  `kaivuriprokkis-python` (`runtime/vendor/xvla_bundle_contract.py`).

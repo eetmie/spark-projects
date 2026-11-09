@@ -24,4 +24,7 @@ VLA_DATASETS=${VLA_DATASETS:-$HOME/Desktop}
 # Where finished bundles are collected before shipping to the robot.
 VLA_BUNDLES=${VLA_BUNDLES:-$HOME/bundles}
 
-export VLA_ONNX SPARK_PROJECTS VENV_LEROBOT061 VLA_DATASETS VLA_BUNDLES
+# jetson-orin-nano-vla checkout: its export.sh turns a checkpoint into the Orin bundle.
+JETSON_VLA=${JETSON_VLA:-$HOME/jetson-orin-nano-vla}
+
+export VLA_ONNX SPARK_PROJECTS VENV_LEROBOT061 VLA_DATASETS VLA_BUNDLES JETSON_VLA

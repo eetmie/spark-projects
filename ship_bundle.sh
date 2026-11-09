@@ -12,9 +12,10 @@
 #   * A bundle without MANIFEST.sha256 is refused. The graphs travel as .onnx +
 #     .onnx.data pairs, and a truncated external-data file fails much later at
 #     engine-build time with an error that names neither the file nor the cause.
-#   * A bundle whose export_info.json has a null fps/task, or whose stats.json has no
-#     usable normalization, still LOADS on the robot and drives it wrong. That is a
-#     loud warning here, and a hard stop unless --allow-base says you meant it.
+#   * A bundle with a synthetic prompt/fps (model_spec.json `defaulted`; older bundles:
+#     export_info.json with a null fps/task, or stats.json without usable normalization)
+#     still LOADS on the robot and drives it wrong. That is a loud warning here, and a
+#     hard stop unless --allow-base says you meant it.
 set -euo pipefail
 
 ALLOW_BASE=0
@@ -42,13 +43,32 @@ BUNDLE="${BUNDLE%/}"
 if [ ! -f "$BUNDLE/MANIFEST.sha256" ]; then
     echo "!! $BUNDLE has no MANIFEST.sha256 — it predates the metadata exporter." >&2
     echo "   Re-export it so the transfer can be verified on arrival:" >&2
-    echo "     python export_split_onnx.py --model-id <ckpt> --out-dir <dir>" >&2
+    echo "     vla-onnx/run_export.sh --run <run dir> --step <step>" >&2
     exit 1
 fi
 
 # --- what is actually in this bundle -------------------------------------------------
+SPEC="$BUNDLE/model_spec.json"
 INFO="$BUNDLE/export_info.json"
-if [ -f "$INFO" ]; then
+if [ -f "$SPEC" ]; then
+    # jetson-orin-nano-vla bundles: `defaulted` lists synthetic benchmark values (prompt, fps)
+    # the exporter could not read from the training dataset.
+    python3 - "$SPEC" "$ALLOW_BASE" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+print(f"   model      : {s['family']} {s['name']}  ({s['source']['location']})")
+print(f"   shapes     : chunk={s['chunk_size']} steps={s['num_steps']} state={s['state_dim']}/{s['max_state_dim']} "
+      f"action={s['action_dim']}/{s['max_action_dim']}")
+print(f"   fps / task : {s['fps']} / {s['tasks']}")
+print(f"   cameras    : {s['image_keys']}")
+if s.get("defaulted"):
+    print(f"\n!! this bundle is not robot-ready: synthetic {', '.join(s['defaulted'])} (no training dataset metadata)")
+    if sys.argv[2] != "1":
+        print("   Fine for benchmarking; pass --allow-base to ship it anyway. Never drive a machine with one.")
+        sys.exit(2)
+    print("   --allow-base given: shipping as a benchmark artefact.")
+PY
+elif [ -f "$INFO" ]; then
     python3 - "$INFO" "$BUNDLE" "$ALLOW_BASE" <<'PY'
 import json, sys
 from pathlib import Path

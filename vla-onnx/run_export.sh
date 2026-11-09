@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Export a trained run as a split ONNX bundle, and prove it against the torch checkpoint.
+# Export a trained run with jetson-orin-nano-vla's exporter (mixed-FP16 split ONNX bundle
+# with the stock-policy fixture the Jetson checks before it runs).
 #
 #   ./run_export.sh --run xvla/outputs/<sweep>/<run> --step 17500
 #   ./run_export.sh --run xvla/outputs/<sweep>/<run> --step last --dest ~/bundles/my-bundle
@@ -46,10 +47,8 @@ done
 [ "$MODEL" = xvla ] || die "--model $MODEL: only X-VLA is left here (git tag archive/lerobot-playbooks-2026-10-29 has the rest)"
 [ -n "$RUN" ]   || die "--run is required"
 
-VENV=$VENV_LEROBOT061; CKPT_FLAG=--checkpoint; PARITY=parity.py
-PLAYBOOK=$VLA_ONNX/$MODEL
-PY=$VENV/bin/python
-[ -x "$PY" ] || die "no python in $VENV"
+PY=$VENV_LEROBOT061/bin/python   # reads curve.json
+[ -x "$PY" ] || die "no python in $VENV_LEROBOT061"
 
 RUN=${RUN%/}
 [ -d "$RUN/checkpoints" ] || die "$RUN has no checkpoints/ -- is that a run directory?"
@@ -90,26 +89,11 @@ fi
 : "${DEST:=$VLA_DATASETS/$MODEL-$(basename "$(dirname "$RUN")")-$(basename "$RUN")-$STEP}"
 
 echo "=== export $MODEL step $STEP -> $DEST  $(date) ==="
-EXPORT_ARGS=("$CKPT_FLAG" "$CKPT" --out-dir "$DEST")
-[ -n "$VIEWS" ] && EXPORT_ARGS+=(--views "$VIEWS")
-"$PY" "$PLAYBOOK/export_split_onnx.py" "${EXPORT_ARGS[@]}"
-rc=$?; [ $rc -eq 0 ] || die "export failed (rc=$rc), stopping before parity."
+# jetson-orin-nano-vla's exporter: mixed-FP16 graphs, the stock-policy fixture and the
+# manifest. The Jetson's ./run.sh checks the engines against that fixture before anything runs.
+[ -e "$DEST" ] && die "$DEST already exists -- remove it or pass another --dest."
+[ -x "$JETSON_VLA/export.sh" ] || die "no $JETSON_VLA/export.sh -- clone github.com/eetmie/jetson-orin-nano-vla or set JETSON_VLA"
+"$JETSON_VLA/export.sh" "$CKPT" --out "$DEST" ${VIEWS:+--views "$VIEWS"} || die "export failed"
 
-if [ -n "$PARITY" ] && [ -f "$PLAYBOOK/$PARITY" ]; then
-    echo "=== parity vs the torch checkpoint  $(date) ==="
-    PARITY_ARGS=(--split-dir "$DEST" "$CKPT_FLAG" "$CKPT")
-    # X-VLA's parity caches its PyTorch reference in ONE shared npz by default and refuses
-    # when that cache was emitted for a different bundle -- correctly, but it used to scroll
-    # past inside `| tee` and the export still "succeeded" unverified. Keep the reference
-    # with the bundle, and let a refusal or a FAIL stop the script.
-    PARITY_ARGS+=(--reference "$DEST/parity_reference.npz")
-    "$PY" "$PLAYBOOK/$PARITY" "${PARITY_ARGS[@]}" 2>&1 | tee "$DEST/PARITY.txt"
-    rc=${PIPESTATUS[0]}
-    [ "$rc" -eq 0 ] || die "parity did not pass (rc=$rc), see $DEST/PARITY.txt"
-else
-    echo "!! no parity script for $MODEL -- bundle is UNVERIFIED against torch" >&2
-fi
-
-echo "=== bundle ==="
-ls -la "$DEST"
+echo "  dry run on the board:  ./run.sh $DEST   (jetson-orin-nano-vla)"
 echo "  ship it:  $SPARK_PROJECTS/ship_bundle.sh $DEST orin"
