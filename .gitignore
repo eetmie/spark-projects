@@ -48,5 +48,5 @@ third_party/
 *.log
 .DS_Store
 
-# Split-export bundles (regenerate with export_split_onnx.py; deploy copies live on the Orin)
+# Split-export bundles (regenerate with run_export.sh; deploy copies live on the Orin)
 exports-split*/
