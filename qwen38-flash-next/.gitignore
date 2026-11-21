@@ -1,0 +1,12 @@
+.local/
+cleaned/.local/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
+.env
+.env.*
+!.env.example
+api-key
+*.pem
+*.key

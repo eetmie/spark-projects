@@ -7,6 +7,9 @@ repos hold the *recipe*, not the data.
 
 ## Playbooks
 
+### [`qwen38-flash-next/`](qwen38-flash-next/) — Qwen3.8 Flash-Next → Anthropic / OpenAI API
+Local inference on GB10 using vLLM and a Claude-compatible proxy.
+
 ### [`pi05-spark-inference/`](pi05-spark-inference/) — π0.5 VLA inference on GB10
 openpi π0.5 (Physical Intelligence) Vision-Language-Action inference, BF16 baseline → TensorRT FP8+NVFP4.
 
