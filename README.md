@@ -32,7 +32,8 @@ removed (tag `archive/lerobot-playbooks-2026-10-29`); Orin benchmarks live in
 
 
 ### [`scene-reconstruction/`](scene-reconstruction/) — Gaussian PLY → USDZ for Isaac Sim
-Just use Spirula Studio (not sponsored haha). Only the PLY → USD converter is left.
+Just use Spirula Studio (not sponsored haha). Also, use `usd-convert-gsplat
+` from pypi.
 
 
 ## Notes
