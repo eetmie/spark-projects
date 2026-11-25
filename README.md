@@ -31,9 +31,9 @@ removed (tag `archive/lerobot-playbooks-2026-10-29`); Orin benchmarks live in
 [jetson-orin-nano-vla](https://github.com/eetmie/jetson-orin-nano-vla).
 
 
-### [`scene-reconstruction/`](scene-reconstruction/) — Gaussian PLY → USDZ for Isaac Sim
-Just use Spirula Studio (not sponsored haha). Also, use `usd-convert-gsplat
-` from pypi.
+### [`scene-reconstruction/`](scene-reconstruction/) — videos → metric 3DGS → Isaac Sim USDZ
+Spirula Studio + NVIDIA's `usd-convert-gsplat`: runbook, GB10 patches and a tag-size metric
+scaler.
 
 
 ## Notes

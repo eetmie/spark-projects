@@ -1,0 +1,18 @@
+diff --git a/src/app/FrameDecodeFfmpeg.cpp b/src/app/FrameDecodeFfmpeg.cpp
+index e9315f4..636030f 100644
+--- a/src/app/FrameDecodeFfmpeg.cpp
++++ b/src/app/FrameDecodeFfmpeg.cpp
+@@ -26,9 +26,10 @@ bool has_fps_mode(const std::string& exe) {
+     std::atomic<bool> never{false};
+     gui::run_process({exe, "-hide_banner", "-version"}, "",
+                      [&](const std::string& line) {
+-                         if (major < 0)
+-                             std::sscanf(line.c_str(), "ffmpeg version %d.%d",
+-                                         &major, &minor);
++                         // Release-tag builds print "ffmpeg version n4.4".
++                         if (major < 0 &&
++                             std::sscanf(line.c_str(), "ffmpeg version %d.%d", &major, &minor) < 1)
++                             std::sscanf(line.c_str(), "ffmpeg version n%d.%d", &major, &minor);
+                      },
+                      never);
+     return major < 0 || major > 5 || (major == 5 && minor >= 1);

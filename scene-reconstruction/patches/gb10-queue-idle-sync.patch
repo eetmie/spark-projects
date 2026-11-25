@@ -1,0 +1,41 @@
+diff --git a/src/nn/README.md b/src/nn/README.md
+index ec85c78..8c7bb0c 100644
+--- a/src/nn/README.md
++++ b/src/nn/README.md
+@@ -13,7 +13,7 @@ workflows; physical or logical device handles are never shared.
+ 
+ Runtime knobs: `SS_NN_LOG=0..3`, `SS_VK_DEVICE=<index|name|auto|uuid:hex>`,
+ `SS_PROFILE=1`, `SS_VK_VALIDATION=1`, `SS_NN_DEBUG_SYNC=1`, `SS_NN_COOPMAT=0`,
+-`SS_SUBMIT_BUDGET_MS`, `SS_VK_SUBMIT_LOG` (docs/notes/gpu-submit-budget.md),
++`SS_NN_QUEUE_IDLE_SYNC=1`, `SS_SUBMIT_BUDGET_MS`, `SS_VK_SUBMIT_LOG` (docs/notes/gpu-submit-budget.md),
+ `SS_NN_METAL=0|1` (macOS, below).
+ 
+ Host loops in `core/Parallel.h` accept a process-local thread cap through
+diff --git a/src/nn/vk/Stream.cpp b/src/nn/vk/Stream.cpp
+index fc1778d..2b08fa0 100644
+--- a/src/nn/vk/Stream.cpp
++++ b/src/nn/vk/Stream.cpp
+@@ -387,6 +387,10 @@ void Stream::sync() {
+     if (v < s.submitted) {
+         wait_timeline(ctx, s.timeline, &s.submitted);
+     }
++    // Compatibility fallback for drivers whose timeline completion does not
++    // make buffer-device-address writes observable reliably.
++    if (spirula::env_on("NN_QUEUE_IDLE_SYNC"))
++        NN_VK_CHECK(vkQueueWaitIdle(ctx.queue()));
+     for (int i = 0; i < Impl::kRing; ++i) s.harvest(i);
+     s.resolveQueries();
+ }
+diff --git a/src/nn/vk/Stream.h b/src/nn/vk/Stream.h
+index ff700c4..ce2655c 100644
+--- a/src/nn/vk/Stream.h
++++ b/src/nn/vk/Stream.h
+@@ -130,6 +130,8 @@ void wait_timeline(VkSemaphore timeline, uint64_t value);
+ // name and grid BEFORE the dispatch, so a hang bisects to the exact kernel
+ // even when the sync never returns.
+ bool debug_sync_enabled();
++// SS_NN_QUEUE_IDLE_SYNC=1: follow timeline waits with vkQueueWaitIdle for
++// drivers that otherwise expose stale buffer-device-address results.
+ 
+ }  // namespace vk
+ }  // namespace nn
